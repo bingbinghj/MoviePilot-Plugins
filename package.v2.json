@@ -8,5 +8,15 @@
     "author": "你能少吃点吗",
     "system_version": ">=2.12.0",
     "level": 1
+  },
+  "NewApiCheckin": {
+    "name": "New API每日签到",
+    "description": "支持多个 New API 站点每日签到，可使用系统访问令牌、session 或 Linux.do 已登录 Cookie。",
+    "labels": "签到,New API,Linux.do",
+    "version": "1.0.0",
+    "icon": "Moviepilot_A.png",
+    "author": "你能少吃点吗",
+    "system_version": ">=2.12.0",
+    "level": 1
   }
 }
