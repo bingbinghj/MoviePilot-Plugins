@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
@@ -30,7 +31,7 @@ class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
     plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.7"
+    plugin_version = "1.0.8"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -42,13 +43,16 @@ class NewApiCheckin(_PluginBase):
     _notify = True
     _cron = "25 8 * * *"
     _timeout = 30
+    _retry_count = 2
+    _retry_interval = 3
     _cf_bypass = True
     _site_count = 1
     _site_configs: List[Dict[str, Any]] = []
     _accounts_json = ""
     _providers_json = "{}"
     _last_result: Dict[str, Any] = {}
-    MAX_SITE_COUNT = 10
+    MAX_SITE_COUNT = 50
+    RETRY_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
 
     DEFAULT_PROVIDERS = {
         "anyrouter": {"origin": "https://anyrouter.top"},
@@ -119,6 +123,8 @@ class NewApiCheckin(_PluginBase):
         self._notify = bool(config.get("notify", True))
         self._cron = config.get("cron") or self._cron
         self._timeout = self.__to_int(config.get("timeout"), 30)
+        self._retry_count = max(0, self.__to_int(config.get("retry_count"), 2))
+        self._retry_interval = max(0, self.__to_int(config.get("retry_interval"), 3))
         self._cf_bypass = bool(config.get("cf_bypass", True))
         self._site_configs = self.__load_site_configs(config)
         default_site_count = max([
@@ -199,6 +205,8 @@ class NewApiCheckin(_PluginBase):
             "notify": True,
             "cron": "25 8 * * *",
             "timeout": 30,
+            "retry_count": 2,
+            "retry_interval": 3,
             "cf_bypass": True,
             "site_count": 1,
         }
@@ -239,7 +247,7 @@ class NewApiCheckin(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -253,13 +261,41 @@ class NewApiCheckin(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
+                                "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
                                         "component": "VTextField",
                                         "props": {
                                             "model": "timeout",
                                             "label": "请求超时秒数",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 2},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "retry_count",
+                                            "label": "失败重试次数",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 2},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "retry_interval",
+                                            "label": "重试间隔秒数",
                                             "type": "number",
                                         },
                                     }
@@ -281,10 +317,10 @@ class NewApiCheckin(_PluginBase):
                                             "color": "primary",
                                             "variant": "tonal",
                                             "prepend-icon": "mdi-plus",
-                                            "disabled": "{{ site_count >= 10 }}",
+                                            "disabled": "{{ site_count >= 50 }}",
                                             "onClick": (
                                                 "function(event) { "
-                                                "const next = Math.min(10, Number(site_count || 1) + 1); "
+                                                "const next = Math.min(50, Number(site_count || 1) + 1); "
                                                 "model['site_' + next + '_enabled'] = true; "
                                                 "site_count = next; "
                                                 "}"
@@ -649,6 +685,39 @@ class NewApiCheckin(_PluginBase):
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
+    def __request(self, session: requests.Session, method: str, url: str, name: str, action: str, **kwargs) -> requests.Response:
+        method = method.upper()
+        attempts = max(1, self._retry_count + 1)
+        request_func = getattr(session, method.lower())
+        last_error = None
+        kwargs.setdefault("timeout", self._timeout)
+
+        for attempt in range(1, attempts + 1):
+            try:
+                response = request_func(url, **kwargs)
+                if response.status_code not in self.RETRY_STATUS_CODES or attempt >= attempts:
+                    return response
+                logger.warning(
+                    f"{self.plugin_name} [{name}] {action} 第 {attempt}/{attempts} 次返回 "
+                    f"HTTP {response.status_code}，{self._retry_interval} 秒后重试：{method} {url}"
+                )
+            except Exception as err:
+                last_error = err
+                if attempt >= attempts:
+                    logger.warning(f"{self.plugin_name} [{name}] {action} 请求失败且已无重试：{method} {url}，错误：{err}")
+                    raise
+                logger.warning(
+                    f"{self.plugin_name} [{name}] {action} 第 {attempt}/{attempts} 次请求异常，"
+                    f"{self._retry_interval} 秒后重试：{method} {url}，错误：{err}"
+                )
+
+            if self._retry_interval > 0:
+                time.sleep(self._retry_interval)
+
+        if last_error:
+            raise last_error
+        raise RuntimeError(f"{action} 请求失败：{method} {url}")
+
     def __already_checked_in(
         self,
         session: requests.Session,
@@ -662,7 +731,7 @@ class NewApiCheckin(_PluginBase):
         month = datetime.now().strftime("%Y-%m")
         url = urljoin(f"{origin}/", cfg["check_in_path"].lstrip("/")) + f"?month={month}"
         logger.info(f"{self.plugin_name} [{name}] 查询签到状态：GET {url}")
-        response = session.get(url, headers=headers, timeout=self._timeout)
+        response = self.__request(session, "GET", url, name, "查询签到状态", headers=headers)
         if response.status_code != 200:
             logger.warning(f"{self.plugin_name} [{name}] 查询签到状态失败：{self.__response_detail('GET', url, response)}")
             return False
@@ -686,7 +755,7 @@ class NewApiCheckin(_PluginBase):
         post_headers = dict(headers)
         post_headers.update({"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"})
         logger.info(f"{self.plugin_name} [{name}] 执行签到：POST {url}")
-        response = session.post(url, headers=post_headers, timeout=self._timeout)
+        response = self.__request(session, "POST", url, name, "执行签到", headers=post_headers)
         data = self.__json(response)
         text = response.text or ""
         detail = self.__response_detail("POST", url, response)
@@ -735,7 +804,7 @@ class NewApiCheckin(_PluginBase):
         visit_headers = dict(headers)
         visit_headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7"
         logger.info(f"{self.plugin_name} [{name}] 访问页面触发签到：GET {url}")
-        response = session.get(url, headers=visit_headers, timeout=self._timeout)
+        response = self.__request(session, "GET", url, name, "访问页面触发签到", headers=visit_headers)
         text = response.text or ""
         detail = self.__response_detail("GET", url, response)
 
@@ -764,7 +833,7 @@ class NewApiCheckin(_PluginBase):
     ) -> str:
         url = urljoin(f"{origin}/", cfg["user_info_path"].lstrip("/"))
         logger.info(f"{self.plugin_name} [{name}] 查询用户信息：GET {url}")
-        response = session.get(url, headers=headers, timeout=self._timeout)
+        response = self.__request(session, "GET", url, name, "查询用户信息", headers=headers)
         if response.status_code != 200:
             logger.warning(f"{self.plugin_name} [{name}] 查询用户信息失败：{self.__response_detail('GET', url, response)}")
             return ""
@@ -901,6 +970,8 @@ class NewApiCheckin(_PluginBase):
             "notify": self._notify,
             "cron": self._cron,
             "timeout": self._timeout,
+            "retry_count": self._retry_count,
+            "retry_interval": self._retry_interval,
             "cf_bypass": self._cf_bypass,
             "site_count": self._site_count,
         }
