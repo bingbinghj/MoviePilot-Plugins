@@ -12,12 +12,26 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
 
+try:
+    from curl_cffi import requests as curl_requests
+    HAS_CURL_CFFI = True
+except Exception:
+    curl_requests = None
+    HAS_CURL_CFFI = False
+
+try:
+    import cloudscraper
+    HAS_CLOUDSCRAPER = True
+except Exception:
+    cloudscraper = None
+    HAS_CLOUDSCRAPER = False
+
 
 class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
-    plugin_desc = "支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证。"
+    plugin_desc = "支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证，并兼容 Cloudflare 防护。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -35,6 +49,7 @@ class NewApiCheckin(_PluginBase):
     _linuxdo_password = ""
     _cookie = ""
     _api_user = ""
+    _cf_bypass = True
     _accounts_json = "[]"
     _providers_json = "{}"
     _last_result: Dict[str, Any] = {}
@@ -134,6 +149,7 @@ class NewApiCheckin(_PluginBase):
         self._linuxdo_password = config.get("linuxdo_password") or ""
         self._cookie = config.get("cookie") or ""
         self._api_user = config.get("api_user") or ""
+        self._cf_bypass = bool(config.get("cf_bypass", True))
         self._accounts_json = config.get("accounts_json") or self.DEFAULT_ACCOUNT_EXAMPLE
         self._providers_json = config.get("providers_json") or "{}"
 
@@ -203,6 +219,12 @@ class NewApiCheckin(_PluginBase):
                             self.__col_switch("enabled", "启用插件", 4),
                             self.__col_switch("onlyonce", "仅运行一次", 4),
                             self.__col_switch("notify", "发送通知", 4),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self.__col_switch("cf_bypass", "Cloudflare兼容", 12),
                         ],
                     },
                     {
@@ -362,6 +384,7 @@ class NewApiCheckin(_PluginBase):
             "linuxdo_password": "",
             "api_user": "",
             "cookie": "",
+            "cf_bypass": True,
         }
 
     def get_page(self) -> List[dict]:
@@ -461,7 +484,7 @@ class NewApiCheckin(_PluginBase):
         try:
             cfg = self.__merge_provider_config(account, providers)
             origin = cfg["origin"].rstrip("/")
-            session = requests.Session()
+            session = self.__new_session(account)
             session.headers.update(self.__common_headers(account))
 
             linuxdo_cookies = account.get("linuxdo_cookies") or account.get("linux.do_cookies")
@@ -536,7 +559,7 @@ class NewApiCheckin(_PluginBase):
         if not state:
             return {"success": False, "message": "未获取到 OAuth state"}
 
-        linux_session = requests.Session()
+        linux_session = self.__new_session(account)
         linux_session.headers.update(self.__common_headers(account))
         linux_session.cookies.update(self.__parse_cookies(account.get("linuxdo_cookies") or account.get("linux.do_cookies")))
 
@@ -581,7 +604,7 @@ class NewApiCheckin(_PluginBase):
         if not username or not password:
             return {"success": False, "message": "缺少 Linux.do 用户名或密码"}
 
-        linux_session = requests.Session()
+        linux_session = self.__new_session(account)
         linux_session.headers.update(self.__common_headers(account))
         csrf_url = "https://connect.linux.do/session/csrf.json"
         csrf_response = linux_session.get(csrf_url, timeout=self._timeout)
@@ -719,12 +742,37 @@ class NewApiCheckin(_PluginBase):
             "Cache-Control": "no-store",
             "Pragma": "no-cache",
             "User-Agent": account.get("user_agent")
-            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+            or "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+            "sec-ch-ua": '"Chromium";v="136", "Google Chrome";v="136", "Not.A/Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "Sec-Fetch-Dest": "empty",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Site": "same-origin",
         }
         extra = account.get("headers")
         if isinstance(extra, dict):
             headers.update({str(k): str(v) for k, v in extra.items()})
         return headers
+
+    def __new_session(self, account: Dict[str, Any]):
+        if self._cf_bypass and HAS_CURL_CFFI:
+            try:
+                session = curl_requests.Session(impersonate=account.get("impersonate") or "chrome110", timeout=self._timeout)
+                logger.debug(f"{self.plugin_name} 使用 curl_cffi 会话")
+                return session
+            except Exception as err:
+                logger.warning(f"{self.plugin_name} curl_cffi 会话创建失败：{err}")
+
+        if self._cf_bypass and HAS_CLOUDSCRAPER:
+            try:
+                scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+                logger.debug(f"{self.plugin_name} 使用 cloudscraper 会话")
+                return scraper
+            except Exception as err:
+                logger.warning(f"{self.plugin_name} cloudscraper 会话创建失败：{err}")
+
+        return requests.Session()
 
     def __auth_headers(self, account: Dict[str, Any], cfg: Dict[str, Any], origin: str, api_user: Any) -> Dict[str, str]:
         headers = self.__common_headers(account)
@@ -876,6 +924,7 @@ class NewApiCheckin(_PluginBase):
             "linuxdo_password": self._linuxdo_password,
             "api_user": self._api_user,
             "cookie": self._cookie,
+            "cf_bypass": self._cf_bypass,
             "accounts_json": self._accounts_json,
             "providers_json": self._providers_json,
         })

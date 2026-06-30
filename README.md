@@ -15,7 +15,7 @@ https://github.com/bingbinghj/MoviePilot-Plugins
 | 插件 ID | 名称 | 说明 |
 | --- | --- | --- |
 | `TemoxSignin` | 中国特摄联盟自动登录 | 每天自动登录中国特摄联盟，并处理站点算术验证。 |
-| `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证。 |
+| `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证，并兼容 Cloudflare 防护。 |
 
 ## 安装方式
 
@@ -77,6 +77,7 @@ NewApiCheckin
 - 支持多个账号。
 - 支持 Linux.do 账号密码认证，默认方式。
 - 支持 Cookie + New API 用户 ID 认证。
+- 参考 NodeSeek 签到插件，使用 `curl_cffi` / `cloudscraper` 兼容 Cloudflare 防护。
 - 支持每天定时执行。
 - 支持手动运行一次。
 - 支持远程命令 `/newapi_checkin`。
@@ -99,6 +100,8 @@ Hotaru|hotaru
 - `Cookie`：Cookie 方式使用，可粘贴 `session=xxx` 或完整 Cookie 字符串。
 
 说明：
+
+Cookie 方式不是天然没有 Cloudflare 验证。它适合你已经在浏览器里通过 Cloudflare 后，把完整 Cookie 复制出来的情况；如果站点需要 Cloudflare，请尽量包含 `cf_clearance`。插件会用浏览器 TLS 指纹请求来提高通过率。
 
 Linux.do 账号密码方式会尝试直连登录并完成 OAuth。如果 Linux.do 触发 Cloudflare、二次验证或其它浏览器校验，请改用 Cookie 方式。
 

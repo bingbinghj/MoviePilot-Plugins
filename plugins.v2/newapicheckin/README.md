@@ -15,6 +15,8 @@ https://github.com/aceHubert/newapi-ai-check-in
 
 Linux.do 账号密码方式会尝试直连登录并完成 OAuth。如果 Linux.do 触发 Cloudflare、二次验证或其它浏览器校验，请改用 Cookie 方式。
 
+Cookie 方式不是天然没有 Cloudflare 验证。它适合你已经在浏览器里通过 Cloudflare 后，把站点 Cookie 一起复制出来的情况；如果站点需要 Cloudflare，请尽量粘贴完整 Cookie，包含 `cf_clearance`。插件会使用 `curl_cffi` 浏览器 TLS 指纹和 `cloudscraper` 回退来兼容这类请求。
+
 ## 配置方式
 
 插件配置页不需要填写 JSON。
@@ -90,3 +92,17 @@ free-duckcoding
 
 - `New API用户ID`：登录 New API 后，在浏览器 Local Storage 的 `user.id` 中获取。
 - `Cookie`：浏览器开发者工具 -> Application -> Cookies -> 对应站点的 `session`，也可以粘贴完整 Cookie 字符串。
+
+## Cloudflare 说明
+
+插件参考 NodeSeek 签到插件的轻量方案，优先使用：
+
+```text
+curl_cffi
+cloudscraper
+requests
+```
+
+这能解决一类问题：你已经有有效 Cookie 或 `cf_clearance`，但普通 `requests` 因 TLS/浏览器指纹不像真实浏览器而被拦。
+
+它不能无浏览器完成首次 Cloudflare Challenge。首次验证仍需要你在浏览器中完成，然后复制 Cookie。
