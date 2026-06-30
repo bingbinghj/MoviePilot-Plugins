@@ -13,7 +13,7 @@
     "name": "New API每日签到",
     "description": "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。",
     "labels": "签到,New API,Cookie",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "icon": "Moviepilot_A.png",
     "author": "你能少吃点吗",
     "system_version": ">=2.12.0",

@@ -30,7 +30,7 @@ class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
     plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.6"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -124,6 +124,7 @@ class NewApiCheckin(_PluginBase):
         default_site_count = max([
             index for index, site in enumerate(self._site_configs, start=1)
             if site.get("name") or site.get("url") or site.get("api_user") or site.get("cookie")
+            or site.get("system_access_token") or site.get("check_in_path") or site.get("user_info_path")
         ] or [1])
         self._site_count = max(
             1,
@@ -207,6 +208,9 @@ class NewApiCheckin(_PluginBase):
                 f"site_{index}_url": "",
                 f"site_{index}_api_user": "",
                 f"site_{index}_cookie": "",
+                f"site_{index}_system_access_token": "",
+                f"site_{index}_check_in_path": "",
+                f"site_{index}_user_info_path": "",
             })
 
         return [
@@ -458,6 +462,9 @@ class NewApiCheckin(_PluginBase):
             account["origin"] = site_url.rstrip("/")
             account["api_user"] = site.get("api_user")
             account["cookies"] = site.get("cookie")
+            account["system_access_token"] = site.get("system_access_token")
+            account["check_in_path"] = site.get("check_in_path")
+            account["user_info_path"] = site.get("user_info_path")
             accounts.append(account)
 
         return accounts
@@ -493,6 +500,9 @@ class NewApiCheckin(_PluginBase):
                 "url": self.__clean(config.get(f"site_{index}_url")),
                 "api_user": self.__clean(config.get(f"site_{index}_api_user")),
                 "cookie": self.__clean(config.get(f"site_{index}_cookie")),
+                "system_access_token": self.__clean(config.get(f"site_{index}_system_access_token")),
+                "check_in_path": self.__clean(config.get(f"site_{index}_check_in_path")),
+                "user_info_path": self.__clean(config.get(f"site_{index}_user_info_path")),
             }
             sites.append(site)
 
@@ -511,6 +521,9 @@ class NewApiCheckin(_PluginBase):
                 "url": site.get("url") or "",
                 "api_user": site.get("api_user") or self.__clean(config.get("api_user")),
                 "cookie": site.get("cookie") or self.__clean(config.get("cookie")),
+                "system_access_token": "",
+                "check_in_path": "",
+                "user_info_path": "",
             })
         while len(migrated) < self.MAX_SITE_COUNT:
             index = len(migrated) + 1
@@ -520,6 +533,9 @@ class NewApiCheckin(_PluginBase):
                 "url": "",
                 "api_user": "",
                 "cookie": "",
+                "system_access_token": "",
+                "check_in_path": "",
+                "user_info_path": "",
             })
         return migrated
 
@@ -538,7 +554,7 @@ class NewApiCheckin(_PluginBase):
     def __merge_provider_config(self, account: Dict[str, Any], providers: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
         provider = str(account.get("provider") or "")
         cfg = dict(providers.get(provider, {}))
-        cfg.update({k: v for k, v in account.items() if k in {
+        cfg.update({k: v for k, v in account.items() if v and k in {
             "origin", "login_path", "status_path", "auth_state_path", "check_in_path",
             "check_in_status", "user_info_path", "api_user_key",
         }})
@@ -651,7 +667,10 @@ class NewApiCheckin(_PluginBase):
             success = "success" in text.lower()
             if not success:
                 logger.warning(f"{self.plugin_name} [{name}] 签到返回非 JSON：{detail}")
-            return {"success": success, "message": "非 JSON 响应", "detail": detail}
+            message = "非 JSON 响应"
+            if self.__is_js_challenge(text):
+                message = "命中站点 JS 防护，请在浏览器通过验证后复制完整 Cookie"
+            return {"success": success, "message": message, "detail": detail}
 
         message = data.get("message") or data.get("msg") or ""
         success = (
@@ -746,6 +765,15 @@ class NewApiCheckin(_PluginBase):
         return text
 
     @staticmethod
+    def __is_js_challenge(text: str) -> bool:
+        text = text or ""
+        return (
+            "var arg1=" in text
+            or "acw_sc__v2" in text
+            or "window.location" in text and "document.cookie" in text
+        )
+
+    @staticmethod
     def __loads_list(value: str, name: str) -> List[Any]:
         data = json.loads(value)
         if not isinstance(data, list):
@@ -793,6 +821,9 @@ class NewApiCheckin(_PluginBase):
                 f"site_{index}_url": site.get("url") or "",
                 f"site_{index}_api_user": site.get("api_user") or "",
                 f"site_{index}_cookie": site.get("cookie") or "",
+                f"site_{index}_system_access_token": site.get("system_access_token") or "",
+                f"site_{index}_check_in_path": site.get("check_in_path") or "",
+                f"site_{index}_user_info_path": site.get("user_info_path") or "",
             })
         self.update_config(config)
 
@@ -902,6 +933,54 @@ class NewApiCheckin(_PluginBase):
                                                 "label": "Cookie",
                                                 "rows": 3,
                                                 "auto-grow": True,
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"site_{index}_system_access_token",
+                                                "label": "系统访问令牌",
+                                                "placeholder": "可选，401 时优先尝试填写",
+                                                "type": "password",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"site_{index}_check_in_path",
+                                                "label": "签到接口路径",
+                                                "placeholder": "/api/user/checkin",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"site_{index}_user_info_path",
+                                                "label": "用户信息路径",
+                                                "placeholder": "/api/user/self",
                                             },
                                         }
                                     ],
