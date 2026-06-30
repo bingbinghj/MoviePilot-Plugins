@@ -31,7 +31,7 @@ class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
     plugin_desc = "支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证，并兼容 Cloudflare 防护。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -43,8 +43,8 @@ class NewApiCheckin(_PluginBase):
     _notify = True
     _cron = "25 8 * * *"
     _timeout = 30
-    _auth_mode = "linuxdo"
-    _sites = "AnyRouter|anyrouter\nHotaru|hotaru"
+    _auth_mode = "cookie"
+    _sites = ""
     _linuxdo_username = ""
     _linuxdo_password = ""
     _cookie = ""
@@ -273,8 +273,8 @@ class NewApiCheckin(_PluginBase):
                                             "model": "auth_mode",
                                             "label": "认证方式",
                                             "items": [
-                                                {"title": "Linux.do账号密码", "value": "linuxdo"},
                                                 {"title": "Cookie", "value": "cookie"},
+                                                {"title": "Linux.do账号密码", "value": "linuxdo"},
                                             ],
                                         },
                                     }
@@ -340,7 +340,7 @@ class NewApiCheckin(_PluginBase):
                                         "props": {
                                             "model": "sites",
                                             "label": "站点列表",
-                                            "placeholder": "每行一个：名称|provider或站点URL，例如 AnyRouter|anyrouter",
+                                            "placeholder": "每行一个：名称|网站URL|New API用户ID|Cookie",
                                             "rows": 8,
                                             "auto-grow": True,
                                         },
@@ -378,8 +378,8 @@ class NewApiCheckin(_PluginBase):
             "notify": True,
             "cron": "25 8 * * *",
             "timeout": 30,
-            "auth_mode": "linuxdo",
-            "sites": "AnyRouter|anyrouter\nHotaru|hotaru",
+            "auth_mode": "cookie",
+            "sites": "",
             "linuxdo_username": "",
             "linuxdo_password": "",
             "api_user": "",
@@ -655,13 +655,10 @@ class NewApiCheckin(_PluginBase):
             account: Dict[str, Any] = {
                 "name": site.get("name") or f"New API {idx}",
             }
-            site_key = site.get("site") or ""
-            if site_key in providers:
-                account["provider"] = site_key
-            elif site_key.startswith("http://") or site_key.startswith("https://"):
-                account["origin"] = site_key.rstrip("/")
-            else:
-                account["provider"] = site_key
+            site_url = site.get("site") or ""
+            if not site_url.startswith("http://") and not site_url.startswith("https://"):
+                raise ValueError(f"{account['name']} 的网站地址必须是 http:// 或 https:// 开头")
+            account["origin"] = site_url.rstrip("/")
 
             if site.get("client_id"):
                 account["linuxdo_client_id"] = site.get("client_id")
@@ -699,7 +696,7 @@ class NewApiCheckin(_PluginBase):
                 "site": site,
                 "api_user": parts[2] if len(parts) > 2 else "",
                 "cookie": parts[3] if len(parts) > 3 else "",
-                "client_id": parts[2] if len(parts) > 2 and not parts[2].isdigit() else "",
+                "client_id": parts[2] if len(parts) > 2 else "",
             })
         return result
 

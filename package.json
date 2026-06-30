@@ -16,12 +16,13 @@
     "name": "New API每日签到",
     "description": "支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证，并兼容 Cloudflare 防护。",
     "labels": "签到,New API,Linux.do",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "icon": "Moviepilot_A.png",
     "author": "你能少吃点吗",
     "level": 1,
     "v2": true,
     "history": {
+      "v1.0.3": "默认改为 Cookie 认证，站点列表改为自定义 URL，不再要求填写内置 provider。",
       "v1.0.2": "参考 NodeSeek 签到插件增加 curl_cffi/cloudscraper Cloudflare 兼容请求。",
       "v1.0.1": "配置页改为表单字段，支持选择 Linux.do 账号密码或 Cookie 认证。",
       "v1.0.0": "首次发布，支持多站点 New API 签到。"

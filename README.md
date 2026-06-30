@@ -82,22 +82,22 @@ NewApiCheckin
 - 支持手动运行一次。
 - 支持远程命令 `/newapi_checkin`。
 
-配置页不需要填写 JSON。默认选择 `Linux.do账号密码`，填写 Linux.do 用户名、密码和站点列表即可。
+配置页不需要填写 JSON。默认选择 `Cookie`，填写 New API 用户 ID、Cookie 和站点列表即可。
 
 站点列表格式：
 
 ```text
-AnyRouter|anyrouter
-Hotaru|hotaru
-自定义站点|https://example.com
+站点A|https://a.example.com
+站点B|https://b.example.com
+站点C|https://c.example.com|123|session=xxx; cf_clearance=yyy
 ```
 
 常用参数：
 
-- `认证方式`：选择 `Linux.do账号密码` 或 `Cookie`。
+- `认证方式`：默认 `Cookie`，也可以选择 `Linux.do账号密码`。
 - `Linux.do用户名` / `Linux.do密码`：账号密码模式使用。
 - `New API用户ID`：Cookie 方式使用，通常在浏览器 Local Storage 的 `user.id` 中。
-- `Cookie`：Cookie 方式使用，可粘贴 `session=xxx` 或完整 Cookie 字符串。
+- `Cookie`：Cookie 方式使用，可粘贴 `session=xxx` 或完整 Cookie 字符串。多站点不同 Cookie 时写在站点列表第 4 列。
 
 说明：
 
