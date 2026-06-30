@@ -1,8 +1,7 @@
 import json
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 from apscheduler.triggers.cron import CronTrigger
@@ -29,9 +28,9 @@ except Exception:
 
 class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
-    plugin_desc = "支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证，并兼容 Cloudflare 防护。"
+    plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -43,16 +42,13 @@ class NewApiCheckin(_PluginBase):
     _notify = True
     _cron = "25 8 * * *"
     _timeout = 30
-    _auth_mode = "cookie"
-    _sites = ""
-    _linuxdo_username = ""
-    _linuxdo_password = ""
-    _cookie = ""
-    _api_user = ""
     _cf_bypass = True
-    _accounts_json = "[]"
+    _site_count = 1
+    _site_configs: List[Dict[str, Any]] = []
+    _accounts_json = ""
     _providers_json = "{}"
     _last_result: Dict[str, Any] = {}
+    MAX_SITE_COUNT = 10
 
     DEFAULT_PROVIDERS = {
         "anyrouter": {"origin": "https://anyrouter.top"},
@@ -116,26 +112,6 @@ class NewApiCheckin(_PluginBase):
         },
     }
 
-    DEFAULT_ACCOUNT_EXAMPLE = json.dumps([
-        {
-            "name": "AnyRouter",
-            "provider": "anyrouter",
-            "api_user": "123",
-            "system_access_token": "sk-xxxxxxxxxxxxxxxx",
-        },
-        {
-            "name": "自定义站点",
-            "origin": "https://example.com",
-            "api_user": "123",
-            "cookies": {"session": "new-api-session-value"},
-        },
-        {
-            "name": "Linux.do Cookie OAuth",
-            "provider": "hotaru",
-            "linuxdo_cookies": "_t=linuxdo_session_value",
-        },
-    ], ensure_ascii=False, indent=2)
-
     def init_plugin(self, config: dict = None):
         config = config or {}
         self._enabled = bool(config.get("enabled"))
@@ -143,14 +119,20 @@ class NewApiCheckin(_PluginBase):
         self._notify = bool(config.get("notify", True))
         self._cron = config.get("cron") or self._cron
         self._timeout = self.__to_int(config.get("timeout"), 30)
-        self._auth_mode = config.get("auth_mode") or self._auth_mode
-        self._sites = config.get("sites") or self._sites
-        self._linuxdo_username = config.get("linuxdo_username") or ""
-        self._linuxdo_password = config.get("linuxdo_password") or ""
-        self._cookie = config.get("cookie") or ""
-        self._api_user = config.get("api_user") or ""
         self._cf_bypass = bool(config.get("cf_bypass", True))
-        self._accounts_json = config.get("accounts_json") or self.DEFAULT_ACCOUNT_EXAMPLE
+        self._site_configs = self.__load_site_configs(config)
+        default_site_count = max([
+            index for index, site in enumerate(self._site_configs, start=1)
+            if site.get("name") or site.get("url") or site.get("api_user") or site.get("cookie")
+        ] or [1])
+        self._site_count = max(
+            1,
+            min(
+                self.MAX_SITE_COUNT,
+                self.__to_int(config.get("site_count"), default_site_count),
+            ),
+        )
+        self._accounts_json = config.get("accounts_json") or ""
         self._providers_json = config.get("providers_json") or "{}"
 
         try:
@@ -209,6 +191,24 @@ class NewApiCheckin(_PluginBase):
         ]
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        model = {
+            "enabled": False,
+            "onlyonce": False,
+            "notify": True,
+            "cron": "25 8 * * *",
+            "timeout": 30,
+            "cf_bypass": True,
+            "site_count": 1,
+        }
+        for index in range(1, self.MAX_SITE_COUNT + 1):
+            model.update({
+                f"site_{index}_enabled": index == 1,
+                f"site_{index}_name": "",
+                f"site_{index}_url": "",
+                f"site_{index}_api_user": "",
+                f"site_{index}_cookie": "",
+            })
+
         return [
             {
                 "component": "VForm",
@@ -260,74 +260,7 @@ class NewApiCheckin(_PluginBase):
                             },
                         ],
                     },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "auth_mode",
-                                            "label": "认证方式",
-                                            "items": [
-                                                {"title": "Cookie", "value": "cookie"},
-                                                {"title": "Linux.do账号密码", "value": "linuxdo"},
-                                            ],
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "api_user",
-                                            "label": "New API用户ID",
-                                            "placeholder": "Cookie方式必填，可在 Local Storage 的 user.id 获取",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "linuxdo_username",
-                                            "label": "Linux.do用户名",
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "linuxdo_password",
-                                            "label": "Linux.do密码",
-                                            "type": "password",
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
+                    *[self.__site_config_card(index) for index in range(1, self.MAX_SITE_COUNT + 1)],
                     {
                         "component": "VRow",
                         "content": [
@@ -336,35 +269,21 @@ class NewApiCheckin(_PluginBase):
                                 "props": {"cols": 12},
                                 "content": [
                                     {
-                                        "component": "VTextarea",
+                                        "component": "VBtn",
                                         "props": {
-                                            "model": "sites",
-                                            "label": "站点列表",
-                                            "placeholder": "每行一个：名称|网站URL|New API用户ID|Cookie",
-                                            "rows": 8,
-                                            "auto-grow": True,
+                                            "color": "primary",
+                                            "variant": "tonal",
+                                            "prepend-icon": "mdi-plus",
+                                            "disabled": "{{ site_count >= 10 }}",
+                                            "onClick": (
+                                                "function(event) { "
+                                                "const next = Math.min(10, Number(site_count || 1) + 1); "
+                                                "model['site_' + next + '_enabled'] = true; "
+                                                "site_count = next; "
+                                                "}"
+                                            ),
                                         },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "cookie",
-                                            "label": "Cookie",
-                                            "placeholder": "Cookie方式填写 New API 站点 Cookie，例如 session=xxx；Linux.do方式可留空",
-                                            "rows": 6,
-                                            "auto-grow": True,
-                                        },
+                                        "text": "新增站点",
                                     }
                                 ],
                             }
@@ -372,20 +291,7 @@ class NewApiCheckin(_PluginBase):
                     },
                 ],
             }
-        ], {
-            "enabled": False,
-            "onlyonce": False,
-            "notify": True,
-            "cron": "25 8 * * *",
-            "timeout": 30,
-            "auth_mode": "cookie",
-            "sites": "",
-            "linuxdo_username": "",
-            "linuxdo_password": "",
-            "api_user": "",
-            "cookie": "",
-            "cf_bypass": True,
-        }
+        ], model
 
     def get_page(self) -> List[dict]:
         if not self._last_result:
@@ -487,24 +393,6 @@ class NewApiCheckin(_PluginBase):
             session = self.__new_session(account)
             session.headers.update(self.__common_headers(account))
 
-            linuxdo_cookies = account.get("linuxdo_cookies") or account.get("linux.do_cookies")
-            if linuxdo_cookies and not account.get("cookies") and not account.get("system_access_token"):
-                oauth_result = self.__linuxdo_oauth(session, account, cfg, origin)
-                if not oauth_result.get("success"):
-                    return self.__item(False, name, origin, oauth_result.get("message"))
-                account = dict(account)
-                account["cookies"] = oauth_result.get("cookies") or {}
-                account["api_user"] = oauth_result.get("api_user")
-
-            linuxdo_account = account.get("linux.do")
-            if linuxdo_account and not account.get("cookies") and not account.get("system_access_token"):
-                oauth_result = self.__linuxdo_password_oauth(session, account, cfg, origin, linuxdo_account)
-                if not oauth_result.get("success"):
-                    return self.__item(False, name, origin, oauth_result.get("message"))
-                account = dict(account)
-                account["cookies"] = oauth_result.get("cookies") or {}
-                account["api_user"] = oauth_result.get("api_user")
-
             api_user = account.get("api_user")
             if not api_user:
                 return self.__item(False, name, origin, "缺少 api_user")
@@ -537,142 +425,27 @@ class NewApiCheckin(_PluginBase):
             logger.exception(f"{self.plugin_name} 处理账号 {name} 异常：{err}")
             return self.__item(False, name, account.get("origin") or provider, f"执行异常：{err}")
 
-    def __linuxdo_oauth(
-        self,
-        provider_session: requests.Session,
-        account: Dict[str, Any],
-        cfg: Dict[str, Any],
-        origin: str,
-    ) -> Dict[str, Any]:
-        client_id = account.get("linuxdo_client_id") or cfg.get("linuxdo_client_id")
-        if not client_id:
-            status = provider_session.get(urljoin(f"{origin}/", cfg["status_path"].lstrip("/")), timeout=self._timeout)
-            data = self.__json(status)
-            client_id = (((data or {}).get("data") or {}).get("linuxdo_client_id"))
-        if not client_id:
-            return {"success": False, "message": "未获取到 Linux.do client_id"}
-
-        auth_state_url = urljoin(f"{origin}/", cfg["auth_state_path"].lstrip("/"))
-        state_response = provider_session.get(auth_state_url, timeout=self._timeout)
-        state_data = self.__json(state_response)
-        state = (state_data or {}).get("data")
-        if not state:
-            return {"success": False, "message": "未获取到 OAuth state"}
-
-        linux_session = self.__new_session(account)
-        linux_session.headers.update(self.__common_headers(account))
-        linux_session.cookies.update(self.__parse_cookies(account.get("linuxdo_cookies") or account.get("linux.do_cookies")))
-
-        authorize_url = (
-            "https://connect.linux.do/oauth2/authorize?"
-            + urlencode({"response_type": "code", "client_id": client_id, "state": state})
-        )
-        auth_response = linux_session.get(authorize_url, timeout=self._timeout, allow_redirects=True)
-        approve_url = self.__extract_approve_url(auth_response.text)
-        if approve_url:
-            auth_response = linux_session.get(urljoin("https://connect.linux.do", approve_url), timeout=self._timeout, allow_redirects=True)
-
-        callback_query = parse_qs(urlparse(auth_response.url).query)
-        if "code" not in callback_query:
-            return {"success": False, "message": "Linux.do OAuth 未返回 code，可能 Cookie 失效或遇到 Cloudflare 验证"}
-
-        callback_url = urljoin(f"{origin}/", cfg["linuxdo_auth_path"].lstrip("/"))
-        callback_response = provider_session.get(
-            f"{callback_url}?{urlencode(callback_query, doseq=True)}",
-            headers={"Referer": urljoin(f"{origin}/", cfg["login_path"].lstrip("/")), "Origin": origin},
-            timeout=self._timeout,
-        )
-        callback_data = self.__json(callback_response)
-        if not callback_data or not callback_data.get("success"):
-            return {"success": False, "message": (callback_data or {}).get("message") or "OAuth 回调失败"}
-
-        api_user = ((callback_data.get("data") or {}).get("id"))
-        if not api_user:
-            return {"success": False, "message": "OAuth 回调成功但未返回用户 ID"}
-        return {"success": True, "api_user": api_user, "cookies": provider_session.cookies.get_dict()}
-
-    def __linuxdo_password_oauth(
-        self,
-        provider_session: requests.Session,
-        account: Dict[str, Any],
-        cfg: Dict[str, Any],
-        origin: str,
-        linuxdo_account: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        username = (linuxdo_account or {}).get("username")
-        password = (linuxdo_account or {}).get("password")
-        if not username or not password:
-            return {"success": False, "message": "缺少 Linux.do 用户名或密码"}
-
-        linux_session = self.__new_session(account)
-        linux_session.headers.update(self.__common_headers(account))
-        csrf_url = "https://connect.linux.do/session/csrf.json"
-        csrf_response = linux_session.get(csrf_url, timeout=self._timeout)
-        if self.__is_cloudflare_page(csrf_response.text):
-            return {"success": False, "message": "Linux.do 触发 Cloudflare 验证，账号密码直登不可用，请改用 Cookie 方式"}
-
-        csrf_data = self.__json(csrf_response)
-        csrf_token = (csrf_data or {}).get("csrf")
-        if not csrf_token:
-            return {"success": False, "message": "未获取到 Linux.do CSRF Token"}
-
-        login_response = linux_session.post(
-            "https://connect.linux.do/session",
-            data={
-                "login": username,
-                "password": password,
-                "authenticity_token": csrf_token,
-            },
-            headers={
-                "Referer": "https://connect.linux.do/login",
-                "X-CSRF-Token": csrf_token,
-                "X-Requested-With": "XMLHttpRequest",
-            },
-            timeout=self._timeout,
-        )
-        if self.__is_cloudflare_page(login_response.text):
-            return {"success": False, "message": "Linux.do 登录触发 Cloudflare 验证，请改用 Cookie 方式"}
-
-        login_data = self.__json(login_response)
-        if login_response.status_code >= 400 or (login_data and login_data.get("error")):
-            return {
-                "success": False,
-                "message": (login_data or {}).get("error") or f"Linux.do 登录失败：HTTP {login_response.status_code}",
-            }
-
-        oauth_account = dict(account)
-        oauth_account["linuxdo_cookies"] = linux_session.cookies.get_dict()
-        return self.__linuxdo_oauth(provider_session, oauth_account, cfg, origin)
-
     def __build_accounts_from_form(self, providers: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        configured_sites = [
+            site for site in self._site_configs
+            if site.get("enabled") and self.__clean(site.get("url"))
+        ]
+
         # 兼容旧版 JSON 配置：如果没有新表单站点配置，但存在旧 JSON，则继续读取。
-        if not (self._sites or "").strip() and (self._accounts_json or "").strip():
+        if not configured_sites and (self._accounts_json or "").strip():
             return self.__loads_list(self._accounts_json, "账号配置 JSON")
 
-        sites = self.__parse_sites(self._sites)
         accounts: List[Dict[str, Any]] = []
-        for idx, site in enumerate(sites, start=1):
+        for idx, site in enumerate(configured_sites, start=1):
             account: Dict[str, Any] = {
                 "name": site.get("name") or f"New API {idx}",
             }
-            site_url = site.get("site") or ""
+            site_url = site.get("url") or ""
             if not site_url.startswith("http://") and not site_url.startswith("https://"):
                 raise ValueError(f"{account['name']} 的网站地址必须是 http:// 或 https:// 开头")
             account["origin"] = site_url.rstrip("/")
-
-            if site.get("client_id"):
-                account["linuxdo_client_id"] = site.get("client_id")
-
-            if self._auth_mode == "cookie":
-                api_user = site.get("api_user") or self._api_user
-                cookie = site.get("cookie") or self._cookie
-                account["api_user"] = api_user
-                account["cookies"] = cookie
-            else:
-                account["linux.do"] = {
-                    "username": self._linuxdo_username,
-                    "password": self._linuxdo_password,
-                }
+            account["api_user"] = site.get("api_user")
+            account["cookies"] = site.get("cookie")
             accounts.append(account)
 
         return accounts
@@ -693,12 +466,50 @@ class NewApiCheckin(_PluginBase):
                 site = parts[1]
             result.append({
                 "name": name,
-                "site": site,
+                "url": site,
                 "api_user": parts[2] if len(parts) > 2 else "",
                 "cookie": parts[3] if len(parts) > 3 else "",
-                "client_id": parts[2] if len(parts) > 2 else "",
             })
         return result
+
+    def __load_site_configs(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
+        sites: List[Dict[str, Any]] = []
+        for index in range(1, self.MAX_SITE_COUNT + 1):
+            site = {
+                "enabled": bool(config.get(f"site_{index}_enabled", index == 1)),
+                "name": self.__clean(config.get(f"site_{index}_name")),
+                "url": self.__clean(config.get(f"site_{index}_url")),
+                "api_user": self.__clean(config.get(f"site_{index}_api_user")),
+                "cookie": self.__clean(config.get(f"site_{index}_cookie")),
+            }
+            sites.append(site)
+
+        if any(site.get("url") for site in sites):
+            return sites
+
+        legacy_sites = self.__parse_sites(config.get("sites") or "")
+        if not legacy_sites:
+            return sites
+
+        migrated: List[Dict[str, Any]] = []
+        for site in legacy_sites[:self.MAX_SITE_COUNT]:
+            migrated.append({
+                "enabled": True,
+                "name": site.get("name") or "",
+                "url": site.get("url") or "",
+                "api_user": site.get("api_user") or self.__clean(config.get("api_user")),
+                "cookie": site.get("cookie") or self.__clean(config.get("cookie")),
+            })
+        while len(migrated) < self.MAX_SITE_COUNT:
+            index = len(migrated) + 1
+            migrated.append({
+                "enabled": index == 1,
+                "name": "",
+                "url": "",
+                "api_user": "",
+                "cookie": "",
+            })
+        return migrated
 
     def __load_providers(self) -> Dict[str, Dict[str, Any]]:
         providers = {k: dict(v) for k, v in self.DEFAULT_PROVIDERS.items()}
@@ -717,8 +528,7 @@ class NewApiCheckin(_PluginBase):
         cfg = dict(providers.get(provider, {}))
         cfg.update({k: v for k, v in account.items() if k in {
             "origin", "login_path", "status_path", "auth_state_path", "check_in_path",
-            "check_in_status", "user_info_path", "api_user_key", "linuxdo_client_id",
-            "linuxdo_auth_path", "linuxdo_auth_redirect_path",
+            "check_in_status", "user_info_path", "api_user_key",
         }})
         if not cfg.get("origin"):
             raise ValueError("缺少 origin 或未知 provider")
@@ -729,7 +539,6 @@ class NewApiCheckin(_PluginBase):
         cfg.setdefault("check_in_status", True)
         cfg.setdefault("user_info_path", "/api/user/self")
         cfg.setdefault("api_user_key", "new-api-user")
-        cfg.setdefault("linuxdo_auth_path", "/api/oauth/linuxdo")
         return cfg
 
     def __common_headers(self, account: Dict[str, Any]) -> Dict[str, str]:
@@ -858,18 +667,6 @@ class NewApiCheckin(_PluginBase):
         return {}
 
     @staticmethod
-    def __extract_approve_url(text: str) -> Optional[str]:
-        match = re.search(r'href=["\']([^"\']*/oauth2/approve[^"\']*)["\']', text or "", re.I)
-        if match:
-            return match.group(1)
-        return None
-
-    @staticmethod
-    def __is_cloudflare_page(text: str) -> bool:
-        text = text or ""
-        return "Just a moment" in text or "cf_chl" in text or "Checking your browser" in text
-
-    @staticmethod
     def __json(response: requests.Response) -> Optional[Dict[str, Any]]:
         try:
             data = response.json()
@@ -909,22 +706,24 @@ class NewApiCheckin(_PluginBase):
         return result
 
     def __save_config(self):
-        self.update_config({
+        config = {
             "enabled": self._enabled,
             "onlyonce": self._onlyonce,
             "notify": self._notify,
             "cron": self._cron,
             "timeout": self._timeout,
-            "auth_mode": self._auth_mode,
-            "sites": self._sites,
-            "linuxdo_username": self._linuxdo_username,
-            "linuxdo_password": self._linuxdo_password,
-            "api_user": self._api_user,
-            "cookie": self._cookie,
             "cf_bypass": self._cf_bypass,
-            "accounts_json": self._accounts_json,
-            "providers_json": self._providers_json,
-        })
+            "site_count": self._site_count,
+        }
+        for index, site in enumerate(self._site_configs[:self.MAX_SITE_COUNT], start=1):
+            config.update({
+                f"site_{index}_enabled": bool(site.get("enabled")),
+                f"site_{index}_name": site.get("name") or "",
+                f"site_{index}_url": site.get("url") or "",
+                f"site_{index}_api_user": site.get("api_user") or "",
+                f"site_{index}_cookie": site.get("cookie") or "",
+            })
+        self.update_config(config)
 
     @staticmethod
     def __item(success: bool, name: str, origin: str, message: str) -> Dict[str, Any]:
@@ -937,6 +736,109 @@ class NewApiCheckin(_PluginBase):
             "props": {"cols": 12, "md": md},
             "content": [{"component": "VSwitch", "props": {"model": model, "label": label}}],
         }
+
+    @staticmethod
+    def __site_config_card(index: int) -> dict:
+        show_props = {"show": f"{{{{ site_count >= {index} }}}}"} if index > 1 else {}
+        return {
+            "component": "VCard",
+            "props": {"variant": "tonal", "class": "mb-3", **show_props},
+            "content": [
+                {
+                    "component": "VCardTitle",
+                    "props": {"class": "text-subtitle-1"},
+                    "text": f"站点 {index}",
+                },
+                {
+                    "component": "VCardText",
+                    "content": [
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": f"site_{index}_enabled",
+                                                "label": "启用",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"site_{index}_name",
+                                                "label": "站点名称",
+                                                "placeholder": "可选",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"site_{index}_url",
+                                                "label": "站点URL",
+                                                "placeholder": "https://example.com",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"site_{index}_api_user",
+                                                "label": "New API用户ID",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 8},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": f"site_{index}_cookie",
+                                                "label": "Cookie",
+                                                "rows": 3,
+                                                "auto-grow": True,
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+
+    @staticmethod
+    def __clean(value: Any) -> str:
+        return str(value or "").strip()
 
     @staticmethod
     def __to_int(value: Any, default: int) -> int:
