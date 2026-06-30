@@ -1,0 +1,15 @@
+{
+  "TemoxSignin": {
+    "name": "中国特摄联盟自动登录",
+    "description": "每天自动登录中国特摄联盟，并处理站点算术验证。",
+    "labels": "站点签到,自动登录,Discuz",
+    "version": "1.0.0",
+    "icon": "Moviepilot_A.png",
+    "author": "你能少吃点吗",
+    "level": 1,
+    "v2": true,
+    "history": {
+      "v1.0.0": "首次发布，支持中国特摄联盟账号密码登录和算术验证。"
+    }
+  }
+}
