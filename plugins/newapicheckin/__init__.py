@@ -12,26 +12,12 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
 
-try:
-    from curl_cffi import requests as curl_requests
-    HAS_CURL_CFFI = True
-except Exception:
-    curl_requests = None
-    HAS_CURL_CFFI = False
-
-try:
-    import cloudscraper
-    HAS_CLOUDSCRAPER = True
-except Exception:
-    cloudscraper = None
-    HAS_CLOUDSCRAPER = False
-
 
 class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
-    plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。"
+    plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.8"
+    plugin_version = "1.0.9"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -45,7 +31,6 @@ class NewApiCheckin(_PluginBase):
     _timeout = 30
     _retry_count = 2
     _retry_interval = 3
-    _cf_bypass = True
     _site_count = 1
     _site_configs: List[Dict[str, Any]] = []
     _accounts_json = ""
@@ -125,7 +110,6 @@ class NewApiCheckin(_PluginBase):
         self._timeout = self.__to_int(config.get("timeout"), 30)
         self._retry_count = max(0, self.__to_int(config.get("retry_count"), 2))
         self._retry_interval = max(0, self.__to_int(config.get("retry_interval"), 3))
-        self._cf_bypass = bool(config.get("cf_bypass", True))
         self._site_configs = self.__load_site_configs(config)
         default_site_count = max([
             index for index, site in enumerate(self._site_configs, start=1)
@@ -207,7 +191,6 @@ class NewApiCheckin(_PluginBase):
             "timeout": 30,
             "retry_count": 2,
             "retry_interval": 3,
-            "cf_bypass": True,
             "site_count": 1,
         }
         for index in range(1, self.MAX_SITE_COUNT + 1):
@@ -234,12 +217,6 @@ class NewApiCheckin(_PluginBase):
                             self.__col_switch("enabled", "启用插件", 4),
                             self.__col_switch("onlyonce", "仅运行一次", 4),
                             self.__col_switch("notify", "发送通知", 4),
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            self.__col_switch("cf_bypass", "Cloudflare兼容", 12),
                         ],
                     },
                     {
@@ -656,22 +633,6 @@ class NewApiCheckin(_PluginBase):
         return headers
 
     def __new_session(self, account: Dict[str, Any]):
-        if self._cf_bypass and HAS_CURL_CFFI:
-            try:
-                session = curl_requests.Session(impersonate=account.get("impersonate") or "chrome110", timeout=self._timeout)
-                logger.debug(f"{self.plugin_name} 使用 curl_cffi 会话")
-                return session
-            except Exception as err:
-                logger.warning(f"{self.plugin_name} curl_cffi 会话创建失败：{err}")
-
-        if self._cf_bypass and HAS_CLOUDSCRAPER:
-            try:
-                scraper = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
-                logger.debug(f"{self.plugin_name} 使用 cloudscraper 会话")
-                return scraper
-            except Exception as err:
-                logger.warning(f"{self.plugin_name} cloudscraper 会话创建失败：{err}")
-
         return requests.Session()
 
     def __auth_headers(self, account: Dict[str, Any], cfg: Dict[str, Any], origin: str, api_user: Any) -> Dict[str, str]:
@@ -972,7 +933,6 @@ class NewApiCheckin(_PluginBase):
             "timeout": self._timeout,
             "retry_count": self._retry_count,
             "retry_interval": self._retry_interval,
-            "cf_bypass": self._cf_bypass,
             "site_count": self._site_count,
         }
         for index, site in enumerate(self._site_configs[:self.MAX_SITE_COUNT], start=1):
