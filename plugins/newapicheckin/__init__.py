@@ -15,9 +15,9 @@ from app.schemas.types import EventType
 
 class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
-    plugin_desc = "支持多个 New API 站点每日签到，可使用系统访问令牌、session 或 Linux.do 已登录 Cookie。"
+    plugin_desc = "支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -29,6 +29,12 @@ class NewApiCheckin(_PluginBase):
     _notify = True
     _cron = "25 8 * * *"
     _timeout = 30
+    _auth_mode = "linuxdo"
+    _sites = "AnyRouter|anyrouter\nHotaru|hotaru"
+    _linuxdo_username = ""
+    _linuxdo_password = ""
+    _cookie = ""
+    _api_user = ""
     _accounts_json = "[]"
     _providers_json = "{}"
     _last_result: Dict[str, Any] = {}
@@ -122,6 +128,12 @@ class NewApiCheckin(_PluginBase):
         self._notify = bool(config.get("notify", True))
         self._cron = config.get("cron") or self._cron
         self._timeout = self.__to_int(config.get("timeout"), 30)
+        self._auth_mode = config.get("auth_mode") or self._auth_mode
+        self._sites = config.get("sites") or self._sites
+        self._linuxdo_username = config.get("linuxdo_username") or ""
+        self._linuxdo_password = config.get("linuxdo_password") or ""
+        self._cookie = config.get("cookie") or ""
+        self._api_user = config.get("api_user") or ""
         self._accounts_json = config.get("accounts_json") or self.DEFAULT_ACCOUNT_EXAMPLE
         self._providers_json = config.get("providers_json") or "{}"
 
@@ -231,14 +243,83 @@ class NewApiCheckin(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "auth_mode",
+                                            "label": "认证方式",
+                                            "items": [
+                                                {"title": "Linux.do账号密码", "value": "linuxdo"},
+                                                {"title": "Cookie", "value": "cookie"},
+                                            ],
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "api_user",
+                                            "label": "New API用户ID",
+                                            "placeholder": "Cookie方式必填，可在 Local Storage 的 user.id 获取",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "linuxdo_username",
+                                            "label": "Linux.do用户名",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "linuxdo_password",
+                                            "label": "Linux.do密码",
+                                            "type": "password",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12},
                                 "content": [
                                     {
                                         "component": "VTextarea",
                                         "props": {
-                                            "model": "accounts_json",
-                                            "label": "账号配置 JSON",
-                                            "rows": 16,
+                                            "model": "sites",
+                                            "label": "站点列表",
+                                            "placeholder": "每行一个：名称|provider或站点URL，例如 AnyRouter|anyrouter",
+                                            "rows": 8,
                                             "auto-grow": True,
                                         },
                                     }
@@ -256,8 +337,9 @@ class NewApiCheckin(_PluginBase):
                                     {
                                         "component": "VTextarea",
                                         "props": {
-                                            "model": "providers_json",
-                                            "label": "自定义 Provider JSON",
+                                            "model": "cookie",
+                                            "label": "Cookie",
+                                            "placeholder": "Cookie方式填写 New API 站点 Cookie，例如 session=xxx；Linux.do方式可留空",
                                             "rows": 6,
                                             "auto-grow": True,
                                         },
@@ -274,8 +356,12 @@ class NewApiCheckin(_PluginBase):
             "notify": True,
             "cron": "25 8 * * *",
             "timeout": 30,
-            "accounts_json": self.DEFAULT_ACCOUNT_EXAMPLE,
-            "providers_json": "{}",
+            "auth_mode": "linuxdo",
+            "sites": "AnyRouter|anyrouter\nHotaru|hotaru",
+            "linuxdo_username": "",
+            "linuxdo_password": "",
+            "api_user": "",
+            "cookie": "",
         }
 
     def get_page(self) -> List[dict]:
@@ -346,8 +432,8 @@ class NewApiCheckin(_PluginBase):
     def checkin(self, manual: bool = False) -> Dict[str, Any]:
         logger.info(f"{self.plugin_name} 开始执行")
         try:
-            accounts = self.__loads_list(self._accounts_json, "账号配置 JSON")
             providers = self.__load_providers()
+            accounts = self.__build_accounts_from_form(providers)
         except ValueError as err:
             return self.__finish(False, "配置错误", str(err), [])
 
@@ -387,13 +473,14 @@ class NewApiCheckin(_PluginBase):
                 account["cookies"] = oauth_result.get("cookies") or {}
                 account["api_user"] = oauth_result.get("api_user")
 
-            if account.get("linux.do") and not account.get("cookies") and not account.get("system_access_token"):
-                return self.__item(
-                    False,
-                    name,
-                    origin,
-                    "仅提供 Linux.do 用户名密码时需要浏览器自动化，当前插件不内置 Camoufox；请配置 system_access_token、session 或 linuxdo_cookies。",
-                )
+            linuxdo_account = account.get("linux.do")
+            if linuxdo_account and not account.get("cookies") and not account.get("system_access_token"):
+                oauth_result = self.__linuxdo_password_oauth(session, account, cfg, origin, linuxdo_account)
+                if not oauth_result.get("success"):
+                    return self.__item(False, name, origin, oauth_result.get("message"))
+                account = dict(account)
+                account["cookies"] = oauth_result.get("cookies") or {}
+                account["api_user"] = oauth_result.get("api_user")
 
             api_user = account.get("api_user")
             if not api_user:
@@ -480,6 +567,118 @@ class NewApiCheckin(_PluginBase):
         if not api_user:
             return {"success": False, "message": "OAuth 回调成功但未返回用户 ID"}
         return {"success": True, "api_user": api_user, "cookies": provider_session.cookies.get_dict()}
+
+    def __linuxdo_password_oauth(
+        self,
+        provider_session: requests.Session,
+        account: Dict[str, Any],
+        cfg: Dict[str, Any],
+        origin: str,
+        linuxdo_account: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        username = (linuxdo_account or {}).get("username")
+        password = (linuxdo_account or {}).get("password")
+        if not username or not password:
+            return {"success": False, "message": "缺少 Linux.do 用户名或密码"}
+
+        linux_session = requests.Session()
+        linux_session.headers.update(self.__common_headers(account))
+        csrf_url = "https://connect.linux.do/session/csrf.json"
+        csrf_response = linux_session.get(csrf_url, timeout=self._timeout)
+        if self.__is_cloudflare_page(csrf_response.text):
+            return {"success": False, "message": "Linux.do 触发 Cloudflare 验证，账号密码直登不可用，请改用 Cookie 方式"}
+
+        csrf_data = self.__json(csrf_response)
+        csrf_token = (csrf_data or {}).get("csrf")
+        if not csrf_token:
+            return {"success": False, "message": "未获取到 Linux.do CSRF Token"}
+
+        login_response = linux_session.post(
+            "https://connect.linux.do/session",
+            data={
+                "login": username,
+                "password": password,
+                "authenticity_token": csrf_token,
+            },
+            headers={
+                "Referer": "https://connect.linux.do/login",
+                "X-CSRF-Token": csrf_token,
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            timeout=self._timeout,
+        )
+        if self.__is_cloudflare_page(login_response.text):
+            return {"success": False, "message": "Linux.do 登录触发 Cloudflare 验证，请改用 Cookie 方式"}
+
+        login_data = self.__json(login_response)
+        if login_response.status_code >= 400 or (login_data and login_data.get("error")):
+            return {
+                "success": False,
+                "message": (login_data or {}).get("error") or f"Linux.do 登录失败：HTTP {login_response.status_code}",
+            }
+
+        oauth_account = dict(account)
+        oauth_account["linuxdo_cookies"] = linux_session.cookies.get_dict()
+        return self.__linuxdo_oauth(provider_session, oauth_account, cfg, origin)
+
+    def __build_accounts_from_form(self, providers: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+        # 兼容旧版 JSON 配置：如果没有新表单站点配置，但存在旧 JSON，则继续读取。
+        if not (self._sites or "").strip() and (self._accounts_json or "").strip():
+            return self.__loads_list(self._accounts_json, "账号配置 JSON")
+
+        sites = self.__parse_sites(self._sites)
+        accounts: List[Dict[str, Any]] = []
+        for idx, site in enumerate(sites, start=1):
+            account: Dict[str, Any] = {
+                "name": site.get("name") or f"New API {idx}",
+            }
+            site_key = site.get("site") or ""
+            if site_key in providers:
+                account["provider"] = site_key
+            elif site_key.startswith("http://") or site_key.startswith("https://"):
+                account["origin"] = site_key.rstrip("/")
+            else:
+                account["provider"] = site_key
+
+            if site.get("client_id"):
+                account["linuxdo_client_id"] = site.get("client_id")
+
+            if self._auth_mode == "cookie":
+                api_user = site.get("api_user") or self._api_user
+                cookie = site.get("cookie") or self._cookie
+                account["api_user"] = api_user
+                account["cookies"] = cookie
+            else:
+                account["linux.do"] = {
+                    "username": self._linuxdo_username,
+                    "password": self._linuxdo_password,
+                }
+            accounts.append(account)
+
+        return accounts
+
+    @staticmethod
+    def __parse_sites(value: str) -> List[Dict[str, str]]:
+        result = []
+        for raw in (value or "").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = [part.strip() for part in line.split("|")]
+            if len(parts) == 1:
+                site = parts[0]
+                name = site
+            else:
+                name = parts[0]
+                site = parts[1]
+            result.append({
+                "name": name,
+                "site": site,
+                "api_user": parts[2] if len(parts) > 2 else "",
+                "cookie": parts[3] if len(parts) > 3 else "",
+                "client_id": parts[2] if len(parts) > 2 and not parts[2].isdigit() else "",
+            })
+        return result
 
     def __load_providers(self) -> Dict[str, Dict[str, Any]]:
         providers = {k: dict(v) for k, v in self.DEFAULT_PROVIDERS.items()}
@@ -621,6 +820,11 @@ class NewApiCheckin(_PluginBase):
         return None
 
     @staticmethod
+    def __is_cloudflare_page(text: str) -> bool:
+        text = text or ""
+        return "Just a moment" in text or "cf_chl" in text or "Checking your browser" in text
+
+    @staticmethod
     def __json(response: requests.Response) -> Optional[Dict[str, Any]]:
         try:
             data = response.json()
@@ -666,6 +870,12 @@ class NewApiCheckin(_PluginBase):
             "notify": self._notify,
             "cron": self._cron,
             "timeout": self._timeout,
+            "auth_mode": self._auth_mode,
+            "sites": self._sites,
+            "linuxdo_username": self._linuxdo_username,
+            "linuxdo_password": self._linuxdo_password,
+            "api_user": self._api_user,
+            "cookie": self._cookie,
             "accounts_json": self._accounts_json,
             "providers_json": self._providers_json,
         })

@@ -15,7 +15,7 @@ https://github.com/bingbinghj/MoviePilot-Plugins
 | 插件 ID | 名称 | 说明 |
 | --- | --- | --- |
 | `TemoxSignin` | 中国特摄联盟自动登录 | 每天自动登录中国特摄联盟，并处理站点算术验证。 |
-| `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，可使用系统访问令牌、session 或 Linux.do 已登录 Cookie。 |
+| `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，可选择 Linux.do 账号密码或 Cookie 认证。 |
 
 ## 安装方式
 
@@ -75,65 +75,32 @@ NewApiCheckin
 
 - 支持多个 New API 站点。
 - 支持多个账号。
-- 支持 `system_access_token + api_user`。
-- 支持 `cookies.session + api_user`。
-- 支持实验性的 `linuxdo_cookies` OAuth。
+- 支持 Linux.do 账号密码认证，默认方式。
+- 支持 Cookie + New API 用户 ID 认证。
 - 支持每天定时执行。
 - 支持手动运行一次。
 - 支持远程命令 `/newapi_checkin`。
 
-账号配置示例：
+配置页不需要填写 JSON。默认选择 `Linux.do账号密码`，填写 Linux.do 用户名、密码和站点列表即可。
 
-```json
-[
-  {
-    "name": "AnyRouter",
-    "provider": "anyrouter",
-    "api_user": "123",
-    "system_access_token": "sk-xxxxxxxxxxxxxxxx"
-  },
-  {
-    "name": "自定义站点",
-    "origin": "https://example.com",
-    "api_user": "123",
-    "cookies": {
-      "session": "new-api-session-value"
-    }
-  },
-  {
-    "name": "Linux.do Cookie OAuth",
-    "provider": "hotaru",
-    "linuxdo_cookies": "_t=linuxdo_session_value"
-  }
-]
+站点列表格式：
+
+```text
+AnyRouter|anyrouter
+Hotaru|hotaru
+自定义站点|https://example.com
 ```
 
 常用参数：
 
-- `provider`：使用内置站点配置。
-- `origin`：自定义 New API 站点地址。
-- `api_user`：New API 用户 ID，通常在浏览器 Local Storage 的 `user.id` 中。
-- `system_access_token`：New API 个人设置中生成的系统访问令牌。
-- `cookies.session`：New API 站点的 `session` Cookie。
-- `linuxdo_cookies`：已登录 Linux.do 的 Cookie 字符串。
-
-特殊站点可覆盖默认接口路径：
-
-```json
-{
-  "name": "特殊站点",
-  "origin": "https://example.com",
-  "api_user": "123",
-  "system_access_token": "sk-xxx",
-  "check_in_path": "/api/user/checkin",
-  "user_info_path": "/api/user/self",
-  "api_user_key": "new-api-user"
-}
-```
+- `认证方式`：选择 `Linux.do账号密码` 或 `Cookie`。
+- `Linux.do用户名` / `Linux.do密码`：账号密码模式使用。
+- `New API用户ID`：Cookie 方式使用，通常在浏览器 Local Storage 的 `user.id` 中。
+- `Cookie`：Cookie 方式使用，可粘贴 `session=xxx` 或完整 Cookie 字符串。
 
 说明：
 
-只填写 Linux.do 用户名密码的自动浏览器登录没有内置。参考项目依赖 Camoufox/Playwright 处理 Cloudflare 和 OAuth 页面，这类浏览器运行环境不适合直接放进 MoviePilot 后端插件。建议使用 `system_access_token`、`session` 或 `linuxdo_cookies`。
+Linux.do 账号密码方式会尝试直连登录并完成 OAuth。如果 Linux.do 触发 Cloudflare、二次验证或其它浏览器校验，请改用 Cookie 方式。
 
 ## 兼容结构
 
