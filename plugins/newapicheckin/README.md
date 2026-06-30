@@ -44,3 +44,13 @@ requests
 这能解决一类问题：你已经有有效 Cookie 或 `cf_clearance`，但普通 `requests` 因 TLS/浏览器指纹不像真实浏览器而被拦。
 
 它不能无浏览器完成首次 Cloudflare Challenge。首次验证仍需要你在浏览器中完成，然后复制 Cookie。
+
+## 排查日志
+
+插件会在 MoviePilot 日志中记录每个站点的请求 URL、HTTP 状态、Content-Type 和截断后的响应正文。
+
+插件详情页的最近执行结果也会显示失败请求的响应摘要，便于判断：
+
+- `HTTP 401`：通常是 Cookie 失效、New API 用户 ID 不匹配，或站点要求额外认证头。
+- `HTTP 404`：通常是站点签到接口路径不同，或配置的站点 URL 不正确。
+- `非 JSON 响应`：通常是返回了登录页、Cloudflare 页面、反代错误页或站点前端 HTML。

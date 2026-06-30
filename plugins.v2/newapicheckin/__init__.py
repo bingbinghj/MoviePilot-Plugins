@@ -30,7 +30,7 @@ class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
     plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -311,6 +311,7 @@ class NewApiCheckin(_PluginBase):
                     {"component": "td", "text": item.get("origin") or "-"},
                     {"component": "td", "text": "成功" if item.get("success") else "失败"},
                     {"component": "td", "text": item.get("message") or "-"},
+                    {"component": "td", "text": item.get("detail") or "-"},
                 ],
             })
 
@@ -337,6 +338,7 @@ class NewApiCheckin(_PluginBase):
                                     {"component": "th", "text": "站点"},
                                     {"component": "th", "text": "状态"},
                                     {"component": "th", "text": "结果"},
+                                    {"component": "th", "text": "详情"},
                                 ],
                             }
                         ],
@@ -392,6 +394,10 @@ class NewApiCheckin(_PluginBase):
             origin = cfg["origin"].rstrip("/")
             session = self.__new_session(account)
             session.headers.update(self.__common_headers(account))
+            logger.info(
+                f"{self.plugin_name} 开始处理站点：{name}，origin={origin}，"
+                f"check_in_path={cfg.get('check_in_path')}，user_info_path={cfg.get('user_info_path')}"
+            )
 
             api_user = account.get("api_user")
             if not api_user:
@@ -405,15 +411,21 @@ class NewApiCheckin(_PluginBase):
             if not account.get("system_access_token") and not cookies:
                 return self.__item(False, name, origin, "缺少 system_access_token 或 cookies")
 
-            if self.__already_checked_in(session, cfg, origin, headers):
-                user_info = self.__get_user_info(session, cfg, origin, headers)
+            if self.__already_checked_in(session, cfg, origin, headers, name):
+                user_info = self.__get_user_info(session, cfg, origin, headers, name)
                 return self.__item(True, name, origin, f"今日已签到。{user_info}")
 
-            checkin_result = self.__execute_checkin(session, cfg, origin, headers)
+            checkin_result = self.__execute_checkin(session, cfg, origin, headers, name)
             if not checkin_result.get("success"):
-                return self.__item(False, name, origin, checkin_result.get("message"))
+                return self.__item(
+                    False,
+                    name,
+                    origin,
+                    checkin_result.get("message"),
+                    checkin_result.get("detail"),
+                )
 
-            user_info = self.__get_user_info(session, cfg, origin, headers)
+            user_info = self.__get_user_info(session, cfg, origin, headers, name)
             message = checkin_result.get("message") or "签到成功"
             if user_info:
                 message = f"{message}。{user_info}"
@@ -590,32 +602,56 @@ class NewApiCheckin(_PluginBase):
             headers["Authorization"] = f"Bearer {token}"
         return headers
 
-    def __already_checked_in(self, session: requests.Session, cfg: Dict[str, Any], origin: str, headers: Dict[str, str]) -> bool:
+    def __already_checked_in(
+        self,
+        session: requests.Session,
+        cfg: Dict[str, Any],
+        origin: str,
+        headers: Dict[str, str],
+        name: str,
+    ) -> bool:
         if not cfg.get("check_in_status", True):
             return False
         month = datetime.now().strftime("%Y-%m")
         url = urljoin(f"{origin}/", cfg["check_in_path"].lstrip("/")) + f"?month={month}"
+        logger.info(f"{self.plugin_name} [{name}] 查询签到状态：GET {url}")
         response = session.get(url, headers=headers, timeout=self._timeout)
         if response.status_code != 200:
+            logger.warning(f"{self.plugin_name} [{name}] 查询签到状态失败：{self.__response_detail('GET', url, response)}")
             return False
         data = self.__json(response)
         if not data or not data.get("success"):
+            logger.warning(f"{self.plugin_name} [{name}] 查询签到状态返回异常：{self.__response_detail('GET', url, response)}")
             return False
         stats = (data.get("data") or {}).get("stats") or {}
+        logger.info(f"{self.plugin_name} [{name}] 签到状态：checked_in_today={bool(stats.get('checked_in_today'))}")
         return bool(stats.get("checked_in_today"))
 
-    def __execute_checkin(self, session: requests.Session, cfg: Dict[str, Any], origin: str, headers: Dict[str, str]) -> Dict[str, Any]:
+    def __execute_checkin(
+        self,
+        session: requests.Session,
+        cfg: Dict[str, Any],
+        origin: str,
+        headers: Dict[str, str],
+        name: str,
+    ) -> Dict[str, Any]:
         url = urljoin(f"{origin}/", cfg["check_in_path"].lstrip("/"))
         post_headers = dict(headers)
         post_headers.update({"Content-Type": "application/json", "X-Requested-With": "XMLHttpRequest"})
+        logger.info(f"{self.plugin_name} [{name}] 执行签到：POST {url}")
         response = session.post(url, headers=post_headers, timeout=self._timeout)
         data = self.__json(response)
         text = response.text or ""
+        detail = self.__response_detail("POST", url, response)
 
         if response.status_code not in (200, 400):
-            return {"success": False, "message": f"HTTP {response.status_code}"}
+            logger.warning(f"{self.plugin_name} [{name}] 签到请求失败：{detail}")
+            return {"success": False, "message": f"HTTP {response.status_code}", "detail": detail}
         if not data:
-            return {"success": "success" in text.lower(), "message": "非 JSON 响应"}
+            success = "success" in text.lower()
+            if not success:
+                logger.warning(f"{self.plugin_name} [{name}] 签到返回非 JSON：{detail}")
+            return {"success": success, "message": "非 JSON 响应", "detail": detail}
 
         message = data.get("message") or data.get("msg") or ""
         success = (
@@ -629,15 +665,29 @@ class NewApiCheckin(_PluginBase):
         quota_awarded = ((data.get("data") or {}).get("quota_awarded") or 0)
         if quota_awarded:
             detail = f"{detail}，获得 ${round(quota_awarded / 500000, 2)}"
-        return {"success": success, "message": detail}
+        if not success:
+            logger.warning(f"{self.plugin_name} [{name}] 签到接口返回失败：{self.__response_detail('POST', url, response)}")
+        else:
+            logger.info(f"{self.plugin_name} [{name}] 签到接口返回成功：{detail}")
+        return {"success": success, "message": detail, "detail": self.__response_detail("POST", url, response)}
 
-    def __get_user_info(self, session: requests.Session, cfg: Dict[str, Any], origin: str, headers: Dict[str, str]) -> str:
+    def __get_user_info(
+        self,
+        session: requests.Session,
+        cfg: Dict[str, Any],
+        origin: str,
+        headers: Dict[str, str],
+        name: str,
+    ) -> str:
         url = urljoin(f"{origin}/", cfg["user_info_path"].lstrip("/"))
+        logger.info(f"{self.plugin_name} [{name}] 查询用户信息：GET {url}")
         response = session.get(url, headers=headers, timeout=self._timeout)
         if response.status_code != 200:
+            logger.warning(f"{self.plugin_name} [{name}] 查询用户信息失败：{self.__response_detail('GET', url, response)}")
             return ""
         data = self.__json(response)
         if not data or not data.get("success"):
+            logger.warning(f"{self.plugin_name} [{name}] 查询用户信息返回异常：{self.__response_detail('GET', url, response)}")
             return ""
         user = data.get("data") or {}
         quota = round((user.get("quota") or 0) / 500000, 2)
@@ -673,6 +723,27 @@ class NewApiCheckin(_PluginBase):
             return data if isinstance(data, dict) else None
         except Exception:
             return None
+
+    @staticmethod
+    def __response_detail(method: str, url: str, response: requests.Response) -> str:
+        content_type = response.headers.get("Content-Type") or response.headers.get("content-type") or "-"
+        preview = NewApiCheckin.__response_preview(response)
+        final_url = getattr(response, "url", "") or url
+        detail = f"{method} {final_url} -> HTTP {response.status_code}, Content-Type: {content_type}"
+        if preview:
+            detail = f"{detail}, Body: {preview}"
+        return detail
+
+    @staticmethod
+    def __response_preview(response: requests.Response, limit: int = 500) -> str:
+        try:
+            text = response.text or ""
+        except Exception:
+            return ""
+        text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+        if len(text) > limit:
+            return f"{text[:limit]}..."
+        return text
 
     @staticmethod
     def __loads_list(value: str, name: str) -> List[Any]:
@@ -726,8 +797,14 @@ class NewApiCheckin(_PluginBase):
         self.update_config(config)
 
     @staticmethod
-    def __item(success: bool, name: str, origin: str, message: str) -> Dict[str, Any]:
-        return {"success": success, "name": name, "origin": origin, "message": message or ""}
+    def __item(success: bool, name: str, origin: str, message: str, detail: str = "") -> Dict[str, Any]:
+        return {
+            "success": success,
+            "name": name,
+            "origin": origin,
+            "message": message or "",
+            "detail": detail or "",
+        }
 
     @staticmethod
     def __col_switch(model: str, label: str, md: int) -> dict:

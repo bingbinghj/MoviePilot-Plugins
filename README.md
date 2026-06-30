@@ -93,6 +93,8 @@ NewApiCheckin
 
 Cookie 方式不是天然没有 Cloudflare 验证。它适合你已经在浏览器里通过 Cloudflare 后，把完整 Cookie 复制出来的情况；如果站点需要 Cloudflare，请尽量包含 `cf_clearance`。插件会用浏览器 TLS 指纹请求来提高通过率。
 
+排查失败时，插件详情页会显示失败请求的 URL、HTTP 状态、Content-Type 和截断响应正文；MoviePilot 日志中也会记录每个站点的请求过程。
+
 ## 兼容结构
 
 当前仓库同时保留两套结构：
