@@ -30,7 +30,7 @@ class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
     plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.6"
+    plugin_version = "1.0.7"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -125,6 +125,7 @@ class NewApiCheckin(_PluginBase):
             index for index, site in enumerate(self._site_configs, start=1)
             if site.get("name") or site.get("url") or site.get("api_user") or site.get("cookie")
             or site.get("system_access_token") or site.get("check_in_path") or site.get("user_info_path")
+            or site.get("visit_path") or site.get("checkin_mode") == "visit"
         ] or [1])
         self._site_count = max(
             1,
@@ -208,6 +209,8 @@ class NewApiCheckin(_PluginBase):
                 f"site_{index}_url": "",
                 f"site_{index}_api_user": "",
                 f"site_{index}_cookie": "",
+                f"site_{index}_checkin_mode": "api",
+                f"site_{index}_visit_path": "",
                 f"site_{index}_system_access_token": "",
                 f"site_{index}_check_in_path": "",
                 f"site_{index}_user_info_path": "",
@@ -400,20 +403,39 @@ class NewApiCheckin(_PluginBase):
             session.headers.update(self.__common_headers(account))
             logger.info(
                 f"{self.plugin_name} 开始处理站点：{name}，origin={origin}，"
+                f"mode={account.get('checkin_mode') or 'api'}，"
                 f"check_in_path={cfg.get('check_in_path')}，user_info_path={cfg.get('user_info_path')}"
             )
 
             api_user = account.get("api_user")
-            if not api_user:
-                return self.__item(False, name, origin, "缺少 api_user")
-
-            headers = self.__auth_headers(account, cfg, origin, api_user)
+            checkin_mode = account.get("checkin_mode") or "api"
             cookies = self.__parse_cookies(account.get("cookies"))
             if cookies:
                 session.cookies.update(cookies)
 
             if not account.get("system_access_token") and not cookies:
                 return self.__item(False, name, origin, "缺少 system_access_token 或 cookies")
+
+            headers = self.__auth_headers(account, cfg, origin, api_user)
+
+            if checkin_mode == "visit":
+                visit_result = self.__execute_visit_checkin(session, cfg, origin, headers, name, account.get("visit_path"))
+                if not visit_result.get("success"):
+                    return self.__item(
+                        False,
+                        name,
+                        origin,
+                        visit_result.get("message"),
+                        visit_result.get("detail"),
+                    )
+                user_info = self.__get_user_info(session, cfg, origin, headers, name)
+                message = visit_result.get("message") or "访问完成"
+                if user_info:
+                    message = f"{message}。{user_info}"
+                return self.__item(True, name, origin, message, visit_result.get("detail"))
+
+            if not api_user:
+                return self.__item(False, name, origin, "缺少 api_user")
 
             if self.__already_checked_in(session, cfg, origin, headers, name):
                 user_info = self.__get_user_info(session, cfg, origin, headers, name)
@@ -462,6 +484,8 @@ class NewApiCheckin(_PluginBase):
             account["origin"] = site_url.rstrip("/")
             account["api_user"] = site.get("api_user")
             account["cookies"] = site.get("cookie")
+            account["checkin_mode"] = site.get("checkin_mode") or "api"
+            account["visit_path"] = site.get("visit_path")
             account["system_access_token"] = site.get("system_access_token")
             account["check_in_path"] = site.get("check_in_path")
             account["user_info_path"] = site.get("user_info_path")
@@ -500,6 +524,8 @@ class NewApiCheckin(_PluginBase):
                 "url": self.__clean(config.get(f"site_{index}_url")),
                 "api_user": self.__clean(config.get(f"site_{index}_api_user")),
                 "cookie": self.__clean(config.get(f"site_{index}_cookie")),
+                "checkin_mode": self.__checkin_mode(config.get(f"site_{index}_checkin_mode")),
+                "visit_path": self.__clean(config.get(f"site_{index}_visit_path")),
                 "system_access_token": self.__clean(config.get(f"site_{index}_system_access_token")),
                 "check_in_path": self.__clean(config.get(f"site_{index}_check_in_path")),
                 "user_info_path": self.__clean(config.get(f"site_{index}_user_info_path")),
@@ -521,6 +547,8 @@ class NewApiCheckin(_PluginBase):
                 "url": site.get("url") or "",
                 "api_user": site.get("api_user") or self.__clean(config.get("api_user")),
                 "cookie": site.get("cookie") or self.__clean(config.get("cookie")),
+                "checkin_mode": "api",
+                "visit_path": "",
                 "system_access_token": "",
                 "check_in_path": "",
                 "user_info_path": "",
@@ -533,6 +561,8 @@ class NewApiCheckin(_PluginBase):
                 "url": "",
                 "api_user": "",
                 "cookie": "",
+                "checkin_mode": "api",
+                "visit_path": "",
                 "system_access_token": "",
                 "check_in_path": "",
                 "user_info_path": "",
@@ -610,7 +640,8 @@ class NewApiCheckin(_PluginBase):
 
     def __auth_headers(self, account: Dict[str, Any], cfg: Dict[str, Any], origin: str, api_user: Any) -> Dict[str, str]:
         headers = self.__common_headers(account)
-        headers[cfg["api_user_key"]] = str(api_user)
+        if api_user:
+            headers[cfg["api_user_key"]] = str(api_user)
         headers["Referer"] = urljoin(f"{origin}/", cfg["login_path"].lstrip("/"))
         headers["Origin"] = origin
         token = account.get("system_access_token")
@@ -689,6 +720,39 @@ class NewApiCheckin(_PluginBase):
         else:
             logger.info(f"{self.plugin_name} [{name}] 签到接口返回成功：{detail}")
         return {"success": success, "message": detail, "detail": self.__response_detail("POST", url, response)}
+
+    def __execute_visit_checkin(
+        self,
+        session: requests.Session,
+        cfg: Dict[str, Any],
+        origin: str,
+        headers: Dict[str, str],
+        name: str,
+        visit_path: str = "",
+    ) -> Dict[str, Any]:
+        path = self.__clean(visit_path) or "/"
+        url = urljoin(f"{origin}/", path.lstrip("/"))
+        visit_headers = dict(headers)
+        visit_headers["Accept"] = "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7"
+        logger.info(f"{self.plugin_name} [{name}] 访问页面触发签到：GET {url}")
+        response = session.get(url, headers=visit_headers, timeout=self._timeout)
+        text = response.text or ""
+        detail = self.__response_detail("GET", url, response)
+
+        if response.status_code not in (200, 204):
+            logger.warning(f"{self.plugin_name} [{name}] 访问页面触发失败：{detail}")
+            return {"success": False, "message": f"HTTP {response.status_code}", "detail": detail}
+        if self.__is_js_challenge(text):
+            logger.warning(f"{self.plugin_name} [{name}] 访问页面命中 JS 防护：{detail}")
+            return {
+                "success": False,
+                "message": "命中站点 JS 防护，请在浏览器通过验证后复制完整 Cookie",
+                "detail": detail,
+            }
+
+        message = self.__visit_message(text) or "访问完成，若站点支持登录触发签到则已触发"
+        logger.info(f"{self.plugin_name} [{name}] 访问页面触发完成：{message}")
+        return {"success": True, "message": message, "detail": detail}
 
     def __get_user_info(
         self,
@@ -774,6 +838,32 @@ class NewApiCheckin(_PluginBase):
         )
 
     @staticmethod
+    def __visit_message(text: str) -> str:
+        text = text or ""
+        keywords = [
+            "签到成功",
+            "已签到",
+            "赠送",
+            "奖励",
+            "quota",
+            "checkin",
+            "check-in",
+        ]
+        compact = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+        for keyword in keywords:
+            index = compact.lower().find(keyword.lower())
+            if index >= 0:
+                start = max(0, index - 80)
+                end = min(len(compact), index + 160)
+                return compact[start:end]
+        return ""
+
+    @staticmethod
+    def __checkin_mode(value: Any) -> str:
+        value = str(value or "api").strip().lower()
+        return "visit" if value == "visit" else "api"
+
+    @staticmethod
     def __loads_list(value: str, name: str) -> List[Any]:
         data = json.loads(value)
         if not isinstance(data, list):
@@ -821,6 +911,8 @@ class NewApiCheckin(_PluginBase):
                 f"site_{index}_url": site.get("url") or "",
                 f"site_{index}_api_user": site.get("api_user") or "",
                 f"site_{index}_cookie": site.get("cookie") or "",
+                f"site_{index}_checkin_mode": site.get("checkin_mode") or "api",
+                f"site_{index}_visit_path": site.get("visit_path") or "",
                 f"site_{index}_system_access_token": site.get("system_access_token") or "",
                 f"site_{index}_check_in_path": site.get("check_in_path") or "",
                 f"site_{index}_user_info_path": site.get("user_info_path") or "",
@@ -914,6 +1006,37 @@ class NewApiCheckin(_PluginBase):
                                     "props": {"cols": 12, "md": 4},
                                     "content": [
                                         {
+                                            "component": "VSelect",
+                                            "props": {
+                                                "model": f"site_{index}_checkin_mode",
+                                                "label": "签到方式",
+                                                "items": [
+                                                    {"title": "API签到", "value": "api"},
+                                                    {"title": "访问页面触发", "value": "visit"},
+                                                ],
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"site_{index}_visit_path",
+                                                "label": "访问触发路径",
+                                                "placeholder": "/",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
                                             "component": "VTextField",
                                             "props": {
                                                 "model": f"site_{index}_api_user",
@@ -957,9 +1080,14 @@ class NewApiCheckin(_PluginBase):
                                         }
                                     ],
                                 },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 4},
+                                    "props": {"cols": 12, "md": 6},
                                     "content": [
                                         {
                                             "component": "VTextField",
@@ -973,7 +1101,7 @@ class NewApiCheckin(_PluginBase):
                                 },
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 4},
+                                    "props": {"cols": 12, "md": 6},
                                     "content": [
                                         {
                                             "component": "VTextField",
