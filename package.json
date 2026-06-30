@@ -32,5 +32,18 @@
       "v1.0.1": "配置页改为表单字段，支持选择 Linux.do 账号密码或 Cookie 认证。",
       "v1.0.0": "首次发布，支持多站点 New API 签到。"
     }
+  },
+  "RedisAutoRestart": {
+    "name": "Redis异常自动重启",
+    "description": "检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。",
+    "labels": "自动诊断,Redis,重启",
+    "version": "1.0.0",
+    "icon": "Moviepilot_A.png",
+    "author": "你能少吃点吗",
+    "level": 1,
+    "v2": true,
+    "history": {
+      "v1.0.0": "首次发布，支持 Redis PING 和自动诊断日志扫描，异常达到阈值后按配置重启 MoviePilot。"
+    }
   }
 }

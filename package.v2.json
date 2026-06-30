@@ -18,5 +18,15 @@
     "author": "你能少吃点吗",
     "system_version": ">=2.12.0",
     "level": 1
+  },
+  "RedisAutoRestart": {
+    "name": "Redis异常自动重启",
+    "description": "检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。",
+    "labels": "自动诊断,Redis,重启",
+    "version": "1.0.0",
+    "icon": "Moviepilot_A.png",
+    "author": "你能少吃点吗",
+    "system_version": ">=2.12.0",
+    "level": 1
   }
 }

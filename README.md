@@ -16,6 +16,7 @@ https://github.com/bingbinghj/MoviePilot-Plugins
 | --- | --- | --- |
 | `TemoxSignin` | 中国特摄联盟自动登录 | 每天自动登录中国特摄联盟，并处理站点算术验证。 |
 | `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。 |
+| `RedisAutoRestart` | Redis异常自动重启 | 检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。 |
 
 ## 安装方式
 
@@ -97,6 +98,24 @@ NewApiCheckin
 Cookie 方式不是天然没有 Cloudflare 验证。它适合你已经在浏览器里通过 Cloudflare 后，把完整 Cookie 复制出来的情况；如果站点需要 Cloudflare，请尽量包含 `cf_clearance`。插件会用浏览器 TLS 指纹请求来提高通过率。
 
 排查失败时，插件详情页会显示失败请求的 URL、HTTP 状态、Content-Type 和截断响应正文；MoviePilot 日志中也会记录每个站点的请求过程。
+
+## Redis异常自动重启
+
+插件 ID：
+
+```text
+RedisAutoRestart
+```
+
+功能：
+
+- 定时检测 Redis 连接状态。
+- 可扫描自动诊断日志中的 `Redis连接失败`。
+- 连续失败达到阈值后自动重启 MoviePilot。
+- 支持退出进程、自定义命令、只通知不重启三种模式。
+- 支持远程命令 `/redis_auto_restart_check`。
+
+默认重启方式是 `退出进程`，需要你的 Docker、systemd 或其他守护方式能自动拉起 MoviePilot。
 
 ## 兼容结构
 
