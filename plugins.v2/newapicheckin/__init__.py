@@ -17,7 +17,7 @@ class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
     plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.9"
+    plugin_version = "1.0.10"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -37,7 +37,14 @@ class NewApiCheckin(_PluginBase):
     _providers_json = "{}"
     _last_result: Dict[str, Any] = {}
     MAX_SITE_COUNT = 50
+    QUOTA_UNIT = 500000
     RETRY_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+    ALREADY_CHECKED_IN_KEYWORDS = ("已签到", "已经签到", "已签过", "今日已签", "already", "重复签到")
+    SUCCESS_KEYWORDS = ("签到成功", "check in success", "checkin success", "checked in")
+    BALANCE_KEYS = {
+        "balance", "amount", "credit", "credits", "money", "wallet",
+        "remaining_balance", "remain_balance", "available_balance", "quota",
+    }
 
     DEFAULT_PROVIDERS = {
         "anyrouter": {"origin": "https://anyrouter.top"},
@@ -643,7 +650,8 @@ class NewApiCheckin(_PluginBase):
         headers["Origin"] = origin
         token = account.get("system_access_token")
         if token:
-            headers["Authorization"] = f"Bearer {token}"
+            token = str(token).strip()
+            headers["Authorization"] = token if token.lower().startswith("bearer ") else f"Bearer {token}"
         return headers
 
     def __request(self, session: requests.Session, method: str, url: str, name: str, action: str, **kwargs) -> requests.Response:
@@ -678,6 +686,56 @@ class NewApiCheckin(_PluginBase):
         if last_error:
             raise last_error
         raise RuntimeError(f"{action} 请求失败：{method} {url}")
+
+    def __checkin_message(self, data: Dict[str, Any]) -> str:
+        reward = data.get("reward")
+        raw_message = (
+            data.get("message")
+            or data.get("msg")
+            or ("今日已签到" if data.get("already_checked_in") is True else "")
+            or (f"签到成功，获得 ${self.__format_number(float(reward))}" if self.__is_number(reward) else "")
+            or data.get("data")
+            or ""
+        )
+        if isinstance(raw_message, str):
+            return raw_message
+        try:
+            return json.dumps(raw_message, ensure_ascii=False)
+        except Exception:
+            return str(raw_message)
+
+    def __is_checkin_success(self, data: Dict[str, Any], message: str) -> bool:
+        status = str(data.get("status") or "").lower()
+        return (
+            data.get("success") is True
+            or status == "success"
+            or data.get("ret") == 1
+            or self.__is_zero(data.get("code"))
+            or data.get("ok") is True
+            or data.get("already_checked_in") is True
+            or self.__contains_keyword(message, self.ALREADY_CHECKED_IN_KEYWORDS)
+            or self.__contains_keyword(message, self.SUCCESS_KEYWORDS)
+        )
+
+    @staticmethod
+    def __contains_keyword(value: str, keywords: Tuple[str, ...]) -> bool:
+        text = str(value or "").lower()
+        return any(keyword.lower() in text for keyword in keywords)
+
+    @staticmethod
+    def __is_zero(value: Any) -> bool:
+        try:
+            return float(value) == 0
+        except (TypeError, ValueError):
+            return False
+
+    @staticmethod
+    def __is_number(value: Any) -> bool:
+        try:
+            float(value)
+            return True
+        except (TypeError, ValueError):
+            return False
 
     def __already_checked_in(
         self,
@@ -725,7 +783,7 @@ class NewApiCheckin(_PluginBase):
             logger.warning(f"{self.plugin_name} [{name}] 签到请求失败：{detail}")
             return {"success": False, "message": f"HTTP {response.status_code}", "detail": detail}
         if not data:
-            success = "success" in text.lower()
+            success = self.__contains_keyword(text, self.SUCCESS_KEYWORDS + self.ALREADY_CHECKED_IN_KEYWORDS)
             if not success:
                 logger.warning(f"{self.plugin_name} [{name}] 签到返回非 JSON：{detail}")
             message = "非 JSON 响应"
@@ -733,18 +791,12 @@ class NewApiCheckin(_PluginBase):
                 message = "命中站点 JS 防护，请在浏览器通过验证后复制完整 Cookie"
             return {"success": success, "message": message, "detail": detail}
 
-        message = data.get("message") or data.get("msg") or ""
-        success = (
-            data.get("ret") == 1
-            or data.get("code") == 0
-            or data.get("success") is True
-            or "已经签到" in message
-            or "签到成功" in message
-        )
+        message = self.__checkin_message(data)
+        success = self.__is_checkin_success(data, message)
         detail = message or ("签到成功" if success else "签到失败")
         quota_awarded = ((data.get("data") or {}).get("quota_awarded") or 0)
-        if quota_awarded:
-            detail = f"{detail}，获得 ${round(quota_awarded / 500000, 2)}"
+        if self.__is_number(quota_awarded) and float(quota_awarded) > 0:
+            detail = f"{detail}，获得 ${self.__format_number(float(quota_awarded) / self.QUOTA_UNIT)}"
         if not success:
             logger.warning(f"{self.plugin_name} [{name}] 签到接口返回失败：{self.__response_detail('POST', url, response)}")
         else:
@@ -792,21 +844,100 @@ class NewApiCheckin(_PluginBase):
         headers: Dict[str, str],
         name: str,
     ) -> str:
-        url = urljoin(f"{origin}/", cfg["user_info_path"].lstrip("/"))
-        logger.info(f"{self.plugin_name} [{name}] 查询用户信息：GET {url}")
-        response = self.__request(session, "GET", url, name, "查询用户信息", headers=headers)
-        if response.status_code != 200:
-            logger.warning(f"{self.plugin_name} [{name}] 查询用户信息失败：{self.__response_detail('GET', url, response)}")
+        for url in self.__balance_urls(cfg, origin):
+            logger.info(f"{self.plugin_name} [{name}] 查询用户信息：GET {url}")
+            response = self.__request(session, "GET", url, name, "查询用户信息", headers=headers)
+            if response.status_code != 200:
+                logger.warning(f"{self.plugin_name} [{name}] 查询用户信息失败：{self.__response_detail('GET', url, response)}")
+                continue
+            data = self.__json(response)
+            if not data:
+                logger.warning(f"{self.plugin_name} [{name}] 查询用户信息返回非 JSON：{self.__response_detail('GET', url, response)}")
+                continue
+            info = self.__format_user_info(data)
+            if info:
+                logger.info(f"{self.plugin_name} [{name}] 查询用户信息成功：{info}")
+                return info
+            logger.warning(f"{self.plugin_name} [{name}] 查询用户信息未识别到余额：{self.__response_detail('GET', url, response)}")
+        return ""
+
+    def __balance_urls(self, cfg: Dict[str, Any], origin: str) -> List[str]:
+        paths = [
+            cfg.get("user_info_path") or "/api/user/self",
+            "/api/user/self",
+            "/api/status",
+            "/api/u/dashboard",
+            "/api/v1/user/info",
+            "/api/v1/user",
+        ]
+        urls = []
+        for path in paths:
+            url = urljoin(f"{origin}/", str(path).lstrip("/"))
+            if url not in urls:
+                urls.append(url)
+        return urls
+
+    def __format_user_info(self, data: Dict[str, Any]) -> str:
+        user = data.get("data") if isinstance(data.get("data"), dict) else data
+        if isinstance(user, dict) and any(key in user for key in ("quota", "used_quota", "bonus_quota")):
+            quota = self.__format_balance_value(user.get("quota"), "quota") or "$0"
+            used = self.__format_balance_value(user.get("used_quota"), "used_quota") or "$0"
+            bonus = self.__format_balance_value(user.get("bonus_quota"), "bonus_quota") or "$0"
+            return f"余额 {quota}，已用 {used}，赠送 {bonus}"
+
+        extracted = self.__extract_balance_from_data(data)
+        if extracted:
+            key, value = extracted
+            balance = self.__format_balance_value(value, key)
+            if balance:
+                return f"余额 {balance}"
+        return ""
+
+    def __extract_balance_from_data(self, value: Any) -> Optional[Tuple[str, Any]]:
+        if not isinstance(value, dict):
+            return None
+        for key, child in value.items():
+            if key.lower() in self.BALANCE_KEYS and child not in (None, ""):
+                return key, child
+        for child in value.values():
+            if isinstance(child, dict):
+                extracted = self.__extract_balance_from_data(child)
+                if extracted:
+                    return extracted
+            if isinstance(child, list):
+                for item in child:
+                    extracted = self.__extract_balance_from_data(item)
+                    if extracted:
+                        return extracted
+        return None
+
+    def __format_balance_value(self, value: Any, key: str = "") -> str:
+        if value in (None, ""):
             return ""
-        data = self.__json(response)
-        if not data or not data.get("success"):
-            logger.warning(f"{self.plugin_name} [{name}] 查询用户信息返回异常：{self.__response_detail('GET', url, response)}")
-            return ""
-        user = data.get("data") or {}
-        quota = round((user.get("quota") or 0) / 500000, 2)
-        used = round((user.get("used_quota") or 0) / 500000, 2)
-        bonus = round((user.get("bonus_quota") or 0) / 500000, 2)
-        return f"余额 ${quota}，已用 ${used}，赠送 ${bonus}"
+        if isinstance(value, str):
+            normalized = " ".join(value.split())
+            if not normalized:
+                return ""
+            try:
+                numeric = float(normalized.replace("$", "").replace("¥", "").replace("￥", "").replace(",", ""))
+            except ValueError:
+                return normalized
+        else:
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return ""
+
+        if "quota" in key.lower():
+            return f"${self.__format_number(numeric / self.QUOTA_UNIT)}"
+        prefix = "$" if isinstance(value, str) and value.strip().startswith("$") else ""
+        return f"{prefix}{self.__format_number(numeric)}"
+
+    @staticmethod
+    def __format_number(value: float) -> str:
+        if abs(value - round(value)) < 0.000001:
+            return str(int(round(value)))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
     @staticmethod
     def __parse_cookies(value: Any) -> Dict[str, str]:
@@ -1104,8 +1235,8 @@ class NewApiCheckin(_PluginBase):
                                             "component": "VTextField",
                                             "props": {
                                                 "model": f"site_{index}_system_access_token",
-                                                "label": "系统访问令牌",
-                                                "placeholder": "可选，401 时优先尝试填写",
+                                                "label": "Authorization Token",
+                                                "placeholder": "可选，填写 token 或 Bearer token",
                                                 "type": "password",
                                             },
                                         }

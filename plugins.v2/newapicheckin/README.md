@@ -33,9 +33,9 @@ https://github.com/aceHubert/newapi-ai-check-in
 - `重试间隔秒数`：两次重试之间等待的秒数。
 - `签到方式`：默认 `API签到`。如果站点是登录/访问首页时自动赠送额度，改为 `访问页面触发`。
 - `访问触发路径`：访问页面触发模式使用，默认 `/`。
-- `系统访问令牌`：可选。站点返回 `未登录且未提供 access token` 或 Cookie 不稳定时，可填写 New API 后台生成的 system access token。
+- `Authorization Token`：可选。站点返回 `未登录且未提供 access token` 或 Cookie 不稳定时，可填写 New API 后台生成的 system access token；支持裸 token 或 `Bearer xxx`。
 - `签到接口路径`：可选，默认 `/api/user/checkin`。站点接口不同或返回 404 时再填写。
-- `用户信息路径`：可选，默认 `/api/user/self`。
+- `用户信息路径`：可选，默认 `/api/user/self`。未识别到余额时会继续尝试 `/api/status`、`/api/u/dashboard`、`/api/v1/user/info`、`/api/v1/user`。
 
 ## 排查日志
 
@@ -47,5 +47,7 @@ https://github.com/aceHubert/newapi-ai-check-in
 - `HTTP 404`：通常是站点签到接口路径不同，或配置的站点 URL 不正确。
 - `非 JSON 响应`：通常是返回了登录页、站点验证页、反代错误页或站点前端 HTML。
 - `命中站点 JS 防护`：通常需要先在浏览器打开站点并通过验证，再复制包含防护 Cookie 的完整 Cookie。
+
+签到成功会兼容 `success=true`、`status=success`、`ret=1`、`code=0`、`ok=true`，以及 `已签到`、`already`、`重复签到` 等常见已签提示。
 
 Any Router、Agent Router 这类“登录/访问页面后提示签到成功、赠送额度”的站点，建议把 `签到方式` 改为 `访问页面触发`，`访问触发路径` 保持 `/`。
