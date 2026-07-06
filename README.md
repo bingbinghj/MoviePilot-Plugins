@@ -15,8 +15,9 @@ https://github.com/bingbinghj/MoviePilot-Plugins
 | 插件 ID | 名称 | 说明 |
 | --- | --- | --- |
 | `TemoxSignin` | 中国特摄联盟自动登录 | 每天自动登录中国特摄联盟，并处理站点算术验证。 |
-| `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie，并兼容 Cloudflare 防护。 |
+| `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。 |
 | `RedisAutoRestart` | Redis异常自动重启 | 检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。 |
+| `HeyboxSignin` | 小黑盒每日任务 | 根据小黑盒 App 接口执行每日签到和支持的每日任务。 |
 
 ## 安装方式
 
@@ -45,6 +46,7 @@ TemoxSignin
 
 - 自动访问中国特摄联盟登录页。
 - 自动处理站点前置算术验证，例如 `3 + 8 + 7 = ?`。
+- 登录成功通知包含每日登录奖励提示。
 - 支持每天定时执行。
 - 支持手动运行一次。
 - 支持远程命令 `/temox_signin`。
@@ -77,12 +79,11 @@ NewApiCheckin
 - 支持多个 New API 站点。
 - 支持点击新增站点，每个站点独立配置。
 - 使用 Cookie + New API 用户 ID 认证。
-- 参考 NodeSeek 签到插件，使用 `curl_cffi` / `cloudscraper` 兼容 Cloudflare 防护。
 - 支持每天定时执行。
 - 支持手动运行一次。
 - 支持远程命令 `/newapi_checkin`。
 
-配置页不需要填写 JSON，也不需要按行填写站点。默认显示 1 个站点，点击 `新增站点` 可以继续添加，最多 10 个。
+配置页不需要填写 JSON，也不需要按行填写站点。默认显示 1 个站点，点击 `新增站点` 可以继续添加。
 
 常用参数：
 
@@ -91,13 +92,35 @@ NewApiCheckin
 - `Cookie`：可粘贴 `session=xxx` 或完整 Cookie 字符串。多站点不同 Cookie 时在各自站点卡片内填写。
 - `请求超时秒数` / `失败重试次数` / `重试间隔秒数`：用于控制临时性网络失败重试。
 - `签到方式`：标准站点用 `API签到`；Any Router、Agent Router 这类访问页面后赠送额度的站点用 `访问页面触发`。
-- `系统访问令牌`、`签到接口路径`、`用户信息路径`：可选，401/404 或接口不标准时按站点单独填写。
-
-说明：
-
-Cookie 方式不是天然没有 Cloudflare 验证。它适合你已经在浏览器里通过 Cloudflare 后，把完整 Cookie 复制出来的情况；如果站点需要 Cloudflare，请尽量包含 `cf_clearance`。插件会用浏览器 TLS 指纹请求来提高通过率。
+- `Authorization Token`、`签到接口路径`、`用户信息路径`：可选，401/404 或接口不标准时按站点单独填写。
 
 排查失败时，插件详情页会显示失败请求的 URL、HTTP 状态、Content-Type 和截断响应正文；MoviePilot 日志中也会记录每个站点的请求过程。
+
+## 小黑盒每日任务
+
+插件 ID：
+
+```text
+HeyboxSignin
+```
+
+功能：
+
+- 支持多个小黑盒账号。
+- 使用 `pkey` 和 `x_xhh_tokenid` Cookie 调用小黑盒 App 接口。
+- 支持每日签到。
+- 可选执行原脚本支持的分享帖子、分享游戏详情、分享游戏评论任务。
+- 支持每天定时执行、手动运行一次和远程命令 `/heybox_signin`。
+
+配置项：
+
+- `执行分享任务`：开启后会执行分享相关每日任务；关闭后只执行签到。
+- `Cookie`：至少包含 `pkey=xxx;x_xhh_tokenid=xxx;`。
+- `请求超时秒数` / `失败重试次数` / `重试间隔秒数`：用于控制临时性网络失败重试。
+
+加密上报说明：
+
+插件参考原脚本调用 `hkey.qcciii.com` 获取普通接口 `hkey`。分享任务上报时，会把待上报 JSON 通过 `mode=report` 交给 hkey 服务，拿到加密后的 `data/key/sid` 后再提交到 `data.xiaoheihe.cn`。
 
 ## Redis异常自动重启
 

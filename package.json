@@ -48,5 +48,18 @@
     "history": {
       "v1.0.0": "首次发布，支持 Redis PING 和自动诊断日志扫描，异常达到阈值后按配置重启 MoviePilot。"
     }
+  },
+  "HeyboxSignin": {
+    "name": "小黑盒每日任务",
+    "description": "根据小黑盒 App 接口执行每日签到和支持的每日任务。",
+    "labels": "签到,小黑盒,每日任务",
+    "version": "1.0.0",
+    "icon": "Moviepilot_A.png",
+    "author": "你能少吃点吗",
+    "level": 1,
+    "v2": true,
+    "history": {
+      "v1.0.0": "首次发布，支持多账号小黑盒每日签到和原脚本支持的分享任务。"
+    }
   }
 }

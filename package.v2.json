@@ -28,5 +28,15 @@
     "author": "你能少吃点吗",
     "system_version": ">=2.12.0",
     "level": 1
+  },
+  "HeyboxSignin": {
+    "name": "小黑盒每日任务",
+    "description": "根据小黑盒 App 接口执行每日签到和支持的每日任务。",
+    "labels": "签到,小黑盒,每日任务",
+    "version": "1.0.0",
+    "icon": "Moviepilot_A.png",
+    "author": "你能少吃点吗",
+    "system_version": ">=2.12.0",
+    "level": 1
   }
 }
