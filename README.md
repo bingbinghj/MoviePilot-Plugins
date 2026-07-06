@@ -90,8 +90,8 @@ NewApiCheckin
 - `站点URL`：New API 站点首页地址，例如 `https://example.com`。
 - `New API用户ID`：通常在浏览器 Local Storage 的 `user.id` 中。
 - `Cookie`：可粘贴 `session=xxx` 或完整 Cookie 字符串。多站点不同 Cookie 时在各自站点卡片内填写。
-- `请求超时秒数` / `失败重试次数` / `重试间隔秒数`：用于控制临时性网络失败重试。
-- `签到方式`：标准站点用 `API签到`；Any Router、Agent Router 这类访问页面后赠送额度的站点用 `访问页面触发`。
+- `请求超时秒数` / `失败重试次数` / `重试间隔秒数` / `浏览器等待秒数`：用于控制临时性网络失败重试和 CloakBrowser 页面等待。
+- `签到方式`：标准站点用 `API签到`；访问页面后赠送额度的站点用 `访问页面触发`；Any Router 这类返回 `var arg1` JS 防护页的站点用 `CloakBrowser访问触发`，路径建议填 `/console`。
 - `Authorization Token`、`签到接口路径`、`用户信息路径`：可选，401/404 或接口不标准时按站点单独填写。
 
 排查失败时，插件详情页会显示失败请求的 URL、HTTP 状态、Content-Type 和截断响应正文；MoviePilot 日志中也会记录每个站点的请求过程。

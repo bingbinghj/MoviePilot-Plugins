@@ -1,8 +1,9 @@
+import concurrent.futures
 import json
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import requests
 from apscheduler.triggers.cron import CronTrigger
@@ -12,12 +13,17 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
 
+try:
+    from app.helper.browser import PlaywrightHelper
+except Exception:
+    PlaywrightHelper = None
+
 
 class NewApiCheckin(_PluginBase):
     plugin_name = "New API每日签到"
     plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.10"
+    plugin_version = "1.0.11"
     plugin_author = "你能少吃点吗"
     author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
     plugin_config_prefix = "newapicheckin_"
@@ -31,6 +37,7 @@ class NewApiCheckin(_PluginBase):
     _timeout = 30
     _retry_count = 2
     _retry_interval = 3
+    _browser_wait_seconds = 8
     _site_count = 1
     _site_configs: List[Dict[str, Any]] = []
     _accounts_json = ""
@@ -117,12 +124,13 @@ class NewApiCheckin(_PluginBase):
         self._timeout = self.__to_int(config.get("timeout"), 30)
         self._retry_count = max(0, self.__to_int(config.get("retry_count"), 2))
         self._retry_interval = max(0, self.__to_int(config.get("retry_interval"), 3))
+        self._browser_wait_seconds = max(1, self.__to_int(config.get("browser_wait_seconds"), 8))
         self._site_configs = self.__load_site_configs(config)
         default_site_count = max([
             index for index, site in enumerate(self._site_configs, start=1)
             if site.get("name") or site.get("url") or site.get("api_user") or site.get("cookie")
             or site.get("system_access_token") or site.get("check_in_path") or site.get("user_info_path")
-            or site.get("visit_path") or site.get("checkin_mode") == "visit"
+            or site.get("visit_path") or site.get("checkin_mode") in ("visit", "browser_visit")
         ] or [1])
         self._site_count = max(
             1,
@@ -198,6 +206,7 @@ class NewApiCheckin(_PluginBase):
             "timeout": 30,
             "retry_count": 2,
             "retry_interval": 3,
+            "browser_wait_seconds": 8,
             "site_count": 1,
         }
         for index in range(1, self.MAX_SITE_COUNT + 1):
@@ -231,7 +240,7 @@ class NewApiCheckin(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -245,7 +254,7 @@ class NewApiCheckin(_PluginBase):
                             },
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 4},
+                                "props": {"cols": 12, "md": 3},
                                 "content": [
                                     {
                                         "component": "VTextField",
@@ -280,6 +289,20 @@ class NewApiCheckin(_PluginBase):
                                         "props": {
                                             "model": "retry_interval",
                                             "label": "重试间隔秒数",
+                                            "type": "number",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 2},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "browser_wait_seconds",
+                                            "label": "浏览器等待秒数",
                                             "type": "number",
                                         },
                                     }
@@ -438,8 +461,15 @@ class NewApiCheckin(_PluginBase):
 
             headers = self.__auth_headers(account, cfg, origin, api_user)
 
-            if checkin_mode == "visit":
-                visit_result = self.__execute_visit_checkin(session, cfg, origin, headers, name, account.get("visit_path"))
+            if checkin_mode in ("visit", "browser_visit"):
+                if checkin_mode == "browser_visit":
+                    visit_result = self.__execute_browser_visit_checkin(
+                        session, cfg, origin, headers, name, account.get("visit_path")
+                    )
+                else:
+                    visit_result = self.__execute_visit_checkin(
+                        session, cfg, origin, headers, name, account.get("visit_path")
+                    )
                 if not visit_result.get("success"):
                     return self.__item(
                         False,
@@ -836,6 +866,119 @@ class NewApiCheckin(_PluginBase):
         logger.info(f"{self.plugin_name} [{name}] 访问页面触发完成：{message}")
         return {"success": True, "message": message, "detail": detail}
 
+    def __execute_browser_visit_checkin(
+        self,
+        session: requests.Session,
+        cfg: Dict[str, Any],
+        origin: str,
+        headers: Dict[str, str],
+        name: str,
+        visit_path: str = "",
+    ) -> Dict[str, Any]:
+        if PlaywrightHelper is None:
+            return {
+                "success": False,
+                "message": "当前 MoviePilot 环境不可用 PlaywrightHelper/CloakBrowser",
+                "detail": "from app.helper.browser import PlaywrightHelper failed",
+            }
+
+        path = self.__clean(visit_path) or "/"
+        url = urljoin(f"{origin}/", path.lstrip("/"))
+        cookies = self.__browser_cookies(session, origin)
+        timeout_seconds = max(15, self._timeout + self._browser_wait_seconds + 5)
+        logger.info(
+            f"{self.plugin_name} [{name}] CloakBrowser访问触发签到：GET {url}，"
+            f"cookies={len(cookies)}，wait={self._browser_wait_seconds}s"
+        )
+
+        browser_headers = {
+            key: headers[key]
+            for key in ("Authorization", cfg.get("api_user_key"))
+            if key and headers.get(key)
+        }
+        try:
+            browser_result = self.__run_browser_action(url, cookies, browser_headers, timeout_seconds)
+        except Exception as err:
+            logger.warning(f"{self.plugin_name} [{name}] CloakBrowser访问触发异常：{err}")
+            return {"success": False, "message": f"CloakBrowser访问异常：{err}", "detail": f"GET {url}"}
+
+        for cookie in browser_result.get("cookies") or []:
+            self.__set_session_cookie(session, cookie)
+
+        text = browser_result.get("text") or ""
+        html = browser_result.get("html") or ""
+        detail = self.__browser_detail("GET", url, browser_result)
+        if browser_result.get("status") and browser_result.get("status") not in (200, 204):
+            logger.warning(f"{self.plugin_name} [{name}] CloakBrowser访问触发失败：{detail}")
+            return {"success": False, "message": f"HTTP {browser_result.get('status')}", "detail": detail}
+        if self.__is_js_challenge(html) or self.__is_js_challenge(text):
+            logger.warning(f"{self.plugin_name} [{name}] CloakBrowser访问后仍命中 JS 防护：{detail}")
+            return {
+                "success": False,
+                "message": "CloakBrowser访问后仍命中站点 JS 防护，请延长浏览器等待秒数或重新复制完整 Cookie",
+                "detail": detail,
+            }
+
+        message = self.__visit_message(text) or "CloakBrowser访问完成，若站点支持登录触发签到则已触发"
+        logger.info(f"{self.plugin_name} [{name}] CloakBrowser访问触发完成：{message}")
+        return {"success": True, "message": message, "detail": detail}
+
+    def __run_browser_action(
+        self,
+        url: str,
+        cookies: List[Dict[str, Any]],
+        headers: Dict[str, str],
+        timeout_seconds: int,
+    ) -> Dict[str, Any]:
+        captured_result: Dict[str, Any] = {}
+
+        def callback(page):
+            if cookies:
+                page.context.add_cookies(cookies)
+            extra_headers = {
+                key: value for key, value in headers.items()
+                if key.lower() not in ("host", "content-length", "cookie")
+            }
+            if extra_headers:
+                page.set_extra_http_headers(extra_headers)
+
+            response = page.goto(url, wait_until="domcontentloaded", timeout=timeout_seconds * 1000)
+            self.__wait_browser_page(page, timeout_seconds)
+            for _ in range(2):
+                html = page.content() or ""
+                if not self.__is_js_challenge(html):
+                    break
+                page.wait_for_timeout(max(1000, min(self._browser_wait_seconds, 5) * 1000))
+                self.__wait_browser_page(page, timeout_seconds)
+
+            captured_result.update({
+                "status": response.status if response else 0,
+                "final_url": page.url,
+                "title": page.title(),
+                "text": page.evaluate("() => document.body ? document.body.innerText : ''"),
+                "html": page.content() or "",
+                "cookies": page.context.cookies(),
+            })
+            return captured_result
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(lambda: PlaywrightHelper().action(url, callback=callback, timeout=timeout_seconds))
+        try:
+            action_result = future.result(timeout=timeout_seconds + self._browser_wait_seconds + 10)
+            return action_result if isinstance(action_result, dict) else captured_result
+        finally:
+            try:
+                executor.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                executor.shutdown(wait=False)
+
+    def __wait_browser_page(self, page, timeout_seconds: int):
+        try:
+            page.wait_for_load_state("networkidle", timeout=timeout_seconds * 1000)
+        except Exception:
+            pass
+        page.wait_for_timeout(self._browser_wait_seconds * 1000)
+
     def __get_user_info(
         self,
         session: requests.Session,
@@ -961,6 +1104,37 @@ class NewApiCheckin(_PluginBase):
         return {}
 
     @staticmethod
+    def __browser_cookies(session: requests.Session, origin: str) -> List[Dict[str, Any]]:
+        parsed = urlparse(origin)
+        cookie_url = f"{parsed.scheme}://{parsed.netloc}/" if parsed.scheme and parsed.netloc else f"{origin}/"
+        cookies: List[Dict[str, Any]] = []
+        seen = set()
+        for cookie in session.cookies:
+            name = getattr(cookie, "name", "")
+            value = getattr(cookie, "value", None)
+            if not name or value is None or name in seen:
+                continue
+            cookies.append({"name": str(name), "value": str(value), "url": cookie_url})
+            seen.add(name)
+        return cookies
+
+    @staticmethod
+    def __set_session_cookie(session: requests.Session, cookie: Dict[str, Any]):
+        name = cookie.get("name")
+        value = cookie.get("value")
+        if not name or value is None:
+            return
+        domain = cookie.get("domain") or ""
+        path = cookie.get("path") or "/"
+        try:
+            if domain:
+                session.cookies.set(str(name), str(value), domain=str(domain), path=str(path))
+            else:
+                session.cookies.set(str(name), str(value), path=str(path))
+        except Exception:
+            session.cookies.set(str(name), str(value))
+
+    @staticmethod
     def __json(response: requests.Response) -> Optional[Dict[str, Any]]:
         try:
             data = response.json()
@@ -979,11 +1153,26 @@ class NewApiCheckin(_PluginBase):
         return detail
 
     @staticmethod
+    def __browser_detail(method: str, url: str, result: Dict[str, Any]) -> str:
+        final_url = result.get("final_url") or url
+        status = result.get("status") or "-"
+        title = result.get("title") or "-"
+        preview = NewApiCheckin.__text_preview(result.get("text") or result.get("html") or "")
+        detail = f"{method} {final_url} -> HTTP {status}, Browser: CloakBrowser, Title: {title}"
+        if preview:
+            detail = f"{detail}, Body: {preview}"
+        return detail
+
+    @staticmethod
     def __response_preview(response: requests.Response, limit: int = 500) -> str:
         try:
             text = response.text or ""
         except Exception:
             return ""
+        return NewApiCheckin.__text_preview(text, limit)
+
+    @staticmethod
+    def __text_preview(text: str, limit: int = 500) -> str:
         text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
         if len(text) > limit:
             return f"{text[:limit]}..."
@@ -1022,7 +1211,7 @@ class NewApiCheckin(_PluginBase):
     @staticmethod
     def __checkin_mode(value: Any) -> str:
         value = str(value or "api").strip().lower()
-        return "visit" if value == "visit" else "api"
+        return value if value in ("visit", "browser_visit") else "api"
 
     @staticmethod
     def __loads_list(value: str, name: str) -> List[Any]:
@@ -1064,6 +1253,7 @@ class NewApiCheckin(_PluginBase):
             "timeout": self._timeout,
             "retry_count": self._retry_count,
             "retry_interval": self._retry_interval,
+            "browser_wait_seconds": self._browser_wait_seconds,
             "site_count": self._site_count,
         }
         for index, site in enumerate(self._site_configs[:self.MAX_SITE_COUNT], start=1):
@@ -1175,6 +1365,7 @@ class NewApiCheckin(_PluginBase):
                                                 "items": [
                                                     {"title": "API签到", "value": "api"},
                                                     {"title": "访问页面触发", "value": "visit"},
+                                                    {"title": "CloakBrowser访问触发", "value": "browser_visit"},
                                                 ],
                                             },
                                         }

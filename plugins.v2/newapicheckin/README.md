@@ -31,7 +31,8 @@ https://github.com/aceHubert/newapi-ai-check-in
 - `请求超时秒数`：单次请求超时时间。
 - `失败重试次数`：网络异常、408、429、5xx 等临时性失败时重试；401/404 不重试。
 - `重试间隔秒数`：两次重试之间等待的秒数。
-- `签到方式`：默认 `API签到`。如果站点是登录/访问首页时自动赠送额度，改为 `访问页面触发`。
+- `浏览器等待秒数`：`CloakBrowser访问触发` 模式下打开页面后的额外等待时间，默认 8 秒；JS 防护较慢时可调到 10 到 15 秒。
+- `签到方式`：默认 `API签到`。如果站点是登录/访问首页时自动赠送额度，改为 `访问页面触发`；如果返回 `var arg1` 这类 JS 防护 HTML，改为 `CloakBrowser访问触发`。
 - `访问触发路径`：访问页面触发模式使用，默认 `/`。
 - `Authorization Token`：可选。站点返回 `未登录且未提供 access token` 或 Cookie 不稳定时，可填写 New API 后台生成的 system access token；支持裸 token 或 `Bearer xxx`。
 - `签到接口路径`：可选，默认 `/api/user/checkin`。站点接口不同或返回 404 时再填写。
@@ -46,8 +47,8 @@ https://github.com/aceHubert/newapi-ai-check-in
 - `HTTP 401`：通常是 Cookie 失效、New API 用户 ID 不匹配，或站点要求额外认证头。
 - `HTTP 404`：通常是站点签到接口路径不同，或配置的站点 URL 不正确。
 - `非 JSON 响应`：通常是返回了登录页、站点验证页、反代错误页或站点前端 HTML。
-- `命中站点 JS 防护`：通常需要先在浏览器打开站点并通过验证，再复制包含防护 Cookie 的完整 Cookie。
+- `命中站点 JS 防护`：如果正文包含 `<script>var arg1=...`，通常不是 Cloudflare，而是站点自己的 JS 防护。可以先尝试 `CloakBrowser访问触发`；仍失败时再延长 `浏览器等待秒数` 或重新复制完整 Cookie。
 
 签到成功会兼容 `success=true`、`status=success`、`ret=1`、`code=0`、`ok=true`，以及 `已签到`、`already`、`重复签到` 等常见已签提示。
 
-Any Router、Agent Router 这类“登录/访问页面后提示签到成功、赠送额度”的站点，建议把 `签到方式` 改为 `访问页面触发`，`访问触发路径` 保持 `/`。
+Any Router 这类“登录/访问页面后提示签到成功、赠送额度”且带 JS 防护的站点，建议把 `签到方式` 改为 `CloakBrowser访问触发`，`访问触发路径` 填 `/console`。没有 JS 防护的同类站点可以继续使用 `访问页面触发`。
