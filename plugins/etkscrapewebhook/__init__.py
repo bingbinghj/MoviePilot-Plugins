@@ -3,7 +3,6 @@ import os
 import threading
 import time
 import uuid
-from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,7 +19,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -38,7 +37,6 @@ class ETKScrapeWebhook(_PluginBase):
     _listener_installed = False
     _pending: Dict[str, Dict[str, Any]] = {}
     _lock = threading.RLock()
-    _log_mirror_lock = threading.Lock()
 
     def init_plugin(self, config: dict = None):
         self.stop_service()
@@ -70,33 +68,17 @@ class ETKScrapeWebhook(_PluginBase):
         return []
 
     def get_page(self) -> List[dict]:
-        log_text = self._read_recent_plugin_log()
         return [
             {
-                "component": "VCard",
-                "props": {"variant": "outlined"},
-                "content": [
-                    {
-                        "component": "VCardTitle",
-                        "text": "ETK刮削完成通知日志",
-                    },
-                    {
-                        "component": "VCardText",
-                        "content": [
-                            {
-                                "component": "VTextarea",
-                                "props": {
-                                    "model-value": log_text,
-                                    "readonly": True,
-                                    "rows": 24,
-                                    "variant": "outlined",
-                                    "hide-details": True,
-                                    "style": "font-family: monospace; font-size: 12px;",
-                                },
-                            }
-                        ],
-                    },
-                ],
+                "component": "iframe",
+                "props": {
+                    "src": (
+                        "/api/v1/system/logging?length=-1&"
+                        "logfile=plugins/etkscrapewebhook.log"
+                    ),
+                    "title": "ETK刮削完成通知日志",
+                    "style": "width: 100%; height: 70vh; border: 0;",
+                },
             }
         ]
 
@@ -121,41 +103,6 @@ class ETKScrapeWebhook(_PluginBase):
                 old_backup.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("【ETK刮削完成通知】配置插件日志轮转失败: %s", exc)
-
-    @classmethod
-    def _read_recent_plugin_log(cls, line_count: int = 300) -> str:
-        log_path = cls._plugin_log_path()
-        if not log_path.is_file():
-            return "暂无日志"
-        try:
-            with log_path.open("r", encoding="utf-8", errors="replace") as file_obj:
-                return "".join(deque(file_obj, maxlen=line_count)).rstrip()
-        except OSError as exc:
-            return f"读取日志失败: {exc}"
-
-    @classmethod
-    def _plugin_log_offset(cls) -> int:
-        try:
-            return cls._plugin_log_path().stat().st_size
-        except OSError:
-            return 0
-
-    @classmethod
-    def _mirror_plugin_log_to_main(cls, start_offset: int):
-        plugin_log = cls._plugin_log_path()
-        main_log = Path(settings.LOG_PATH) / "moviepilot.log"
-        try:
-            with cls._log_mirror_lock:
-                current_size = plugin_log.stat().st_size
-                offset = start_offset if current_size >= start_offset else 0
-                with plugin_log.open("rb") as source:
-                    source.seek(offset)
-                    content = source.read()
-                if content:
-                    with main_log.open("ab") as target:
-                        target.write(content)
-        except OSError:
-            return
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         return [
@@ -353,7 +300,6 @@ class ETKScrapeWebhook(_PluginBase):
         started_at = time.time()
         success = False
         error = ""
-        log_offset = self._plugin_log_offset()
 
         try:
             logger.info("【ETK刮削完成通知】MoviePilot基础刮削开始: %s", root_path)
@@ -375,7 +321,6 @@ class ETKScrapeWebhook(_PluginBase):
                 duration=round(time.time() - started_at, 3),
             )
             self._send_webhook(payload)
-            self._mirror_plugin_log_to_main(log_offset)
 
         if not success:
             logger.error("【ETK刮削完成通知】批次刮削失败，不触发ETK处理: %s", root_path)

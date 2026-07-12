@@ -157,7 +157,8 @@ ETKScrapeWebhook
 - 由插件接管并执行 MoviePilot 基础刮削，避免逐集请求重复刮削。
 - 验证目标 NFO 已生成后，再通知 ETK 执行后置增强。
 - MoviePilot 基础刮削失败或 NFO 输出不完整时不会通知 ETK。
-- 将插件刮削日志归档到 `plugins/etkscrapewebhook.log`，并在详情页显示最近 300 行。
+- 将插件刮削日志归档到 `plugins/etkscrapewebhook.log`，详情页通过 MoviePilot 原生日志接口直接展示。
+- 不再把插件刮削明细复制到主 `moviepilot.log`。
 - 日志按 5 MB 轮转，保留当前日志和 10 个备份。
 
 配置项：
