@@ -4,7 +4,7 @@ MoviePilot专用插件。它会按媒体根目录防抖合并重复的 `Metadata
 
 插件启用时会显式停用MoviePilot原始 `MetadataScrape` 监听器，改由插件监听、合并后直接调用原处理器。停用插件时恢复MoviePilot原监听器。如MoviePilot未生成目标NFO，批次会标记为失败，ETK不会接管。
 
-MoviePilot会把插件调用链产生的内置刮削日志归档到 `plugins/etkscrapewebhook.log`。点击插件时直接使用MoviePilot原生日志接口显示该日志，不向主 `moviepilot.log` 复制刮削明细。
+MoviePilot会把插件调用链产生的内置刮削日志归档到 `plugins/etkscrapewebhook.log`。插件不提供详情页面，也不向主 `moviepilot.log` 复制刮削明细；通过插件卡片右下角菜单的原生“查看日志”打开完整日志界面。
 
 插件日志固定按5MB轮转，保留当前日志和10个备份文件。
 

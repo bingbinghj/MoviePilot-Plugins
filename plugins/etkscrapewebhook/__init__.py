@@ -19,7 +19,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.0.4"
+    plugin_version = "1.0.5"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -67,20 +67,8 @@ class ETKScrapeWebhook(_PluginBase):
     def get_api(self) -> List[Dict[str, Any]]:
         return []
 
-    def get_page(self) -> List[dict]:
-        return [
-            {
-                "component": "iframe",
-                "props": {
-                    "src": (
-                        "/api/v1/system/logging?length=-1&"
-                        "logfile=plugins/etkscrapewebhook.log"
-                    ),
-                    "title": "ETK刮削完成通知日志",
-                    "style": "width: 100%; height: 70vh; border: 0;",
-                },
-            }
-        ]
+    def get_page(self) -> Optional[List[dict]]:
+        pass
 
     @staticmethod
     def _plugin_log_path() -> Path:
