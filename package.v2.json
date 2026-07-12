@@ -38,5 +38,15 @@
     "author": "你能少吃点吗",
     "system_version": ">=2.12.0",
     "level": 1
+  },
+  "ETKScrapeWebhook": {
+    "name": "ETK刮削完成通知",
+    "description": "合并 MoviePilot 重复刮削请求，并在实际刮削完成后通知 ETK。",
+    "labels": "ETK,刮削,Webhook",
+    "version": "1.0.0",
+    "icon": "webhook.png",
+    "author": "bingbinghj",
+    "system_version": ">=2.12.0",
+    "level": 1
   }
 }
