@@ -323,8 +323,8 @@ class HeyboxSignin(_PluginBase):
     plugin_desc = "根据小黑盒 App 接口执行每日签到和支持的每日任务。"
     plugin_icon = "Moviepilot_A.png"
     plugin_version = "1.0.0"
-    plugin_author = "你能少吃点吗"
-    author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
+    plugin_author = "bingbinghj"
+    author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "heyboxsignin_"
     plugin_order = 53
     auth_level = 1

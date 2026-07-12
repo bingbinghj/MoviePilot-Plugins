@@ -24,8 +24,8 @@ class NewApiCheckin(_PluginBase):
     plugin_desc = "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。"
     plugin_icon = "Moviepilot_A.png"
     plugin_version = "1.0.11"
-    plugin_author = "你能少吃点吗"
-    author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
+    plugin_author = "bingbinghj"
+    author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "newapicheckin_"
     plugin_order = 51
     auth_level = 1

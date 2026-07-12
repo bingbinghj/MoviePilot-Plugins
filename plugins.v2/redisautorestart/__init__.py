@@ -26,8 +26,8 @@ class RedisAutoRestart(_PluginBase):
     plugin_desc = "检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。"
     plugin_icon = "Moviepilot_A.png"
     plugin_version = "1.0.0"
-    plugin_author = "你能少吃点吗"
-    author_url = "https://github.com/bingbinghj/MoviePilot-Plugins"
+    plugin_author = "bingbinghj"
+    author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "redisautorestart_"
     plugin_order = 52
     auth_level = 1

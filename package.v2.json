@@ -5,7 +5,7 @@
     "labels": "站点签到,自动登录,Discuz",
     "version": "1.0.1",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "system_version": ">=2.12.0",
     "level": 1
   },
@@ -15,7 +15,7 @@
     "labels": "签到,New API,Cookie",
     "version": "1.0.11",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "system_version": ">=2.12.0",
     "level": 1
   },
@@ -25,7 +25,7 @@
     "labels": "自动诊断,Redis,重启",
     "version": "1.0.0",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "system_version": ">=2.12.0",
     "level": 1
   },
@@ -35,7 +35,7 @@
     "labels": "签到,小黑盒,每日任务",
     "version": "1.0.0",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "system_version": ">=2.12.0",
     "level": 1
   },
@@ -43,7 +43,7 @@
     "name": "ETK刮削完成通知",
     "description": "合并 MoviePilot 重复刮削请求，并在实际刮削完成后通知 ETK。",
     "labels": "ETK,刮削,Webhook",
-    "version": "1.0.1",
+    "version": "1.0.3",
     "icon": "webhook.png",
     "author": "bingbinghj",
     "system_version": ">=2.12.0",

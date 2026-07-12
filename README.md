@@ -2,6 +2,8 @@
 
 个人维护的 MoviePilot 插件仓库，主要用于 MoviePilot V2。
 
+维护者：[bingbinghj](https://github.com/bingbinghj)
+
 插件仓库地址：
 
 ```text
@@ -18,6 +20,7 @@ https://github.com/bingbinghj/MoviePilot-Plugins
 | `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。 |
 | `RedisAutoRestart` | Redis异常自动重启 | 检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。 |
 | `HeyboxSignin` | 小黑盒每日任务 | 根据小黑盒 App 接口执行每日签到和支持的每日任务。 |
+| `ETKScrapeWebhook` | ETK刮削完成通知 | 合并 MoviePilot 重复刮削请求，并在基础刮削完成后通知 ETK。 |
 
 ## 安装方式
 
@@ -139,6 +142,32 @@ RedisAutoRestart
 - 支持远程命令 `/redis_auto_restart_check`。
 
 默认重启方式是 `退出进程`，需要你的 Docker、systemd 或其他守护方式能自动拉起 MoviePilot。
+
+## ETK刮削完成通知
+
+插件 ID：
+
+```text
+ETKScrapeWebhook
+```
+
+功能：
+
+- 按媒体根目录合并短时间内重复触发的 `MetadataScrape` 请求。
+- 由插件接管并执行 MoviePilot 基础刮削，避免逐集请求重复刮削。
+- 验证目标 NFO 已生成后，再通知 ETK 执行后置增强。
+- MoviePilot 基础刮削失败或 NFO 输出不完整时不会通知 ETK。
+- 将插件刮削日志归档到 `plugins/etkscrapewebhook.log`，并在详情页显示最近 300 行。
+- 日志按 5 MB 轮转，保留当前日志和 10 个备份。
+
+配置项：
+
+- `ETK Webhook地址`：例如 `http://emby-toolkit:5257/webhook/moviepilot`。
+- `ETK Webhook共享密钥`：与 ETK 中配置的 Emby Webhook 共享密钥一致。
+- `合并等待(秒)`：建议保持默认 10 秒。
+- `请求超时(秒)` / `失败重试`：控制通知 ETK 时的请求超时和重试次数。
+
+使用本插件时，应避免同时启用多个自动刮削入口和 ETK 实时文件监控，否则可能在 MoviePilot 基础刮削完成前提前触发 ETK。
 
 ## 兼容结构
 

@@ -19,8 +19,8 @@ class TemoxSignin(_PluginBase):
     plugin_desc = "每天自动登录中国特摄联盟，并处理站点算术验证。"
     plugin_icon = "Moviepilot_A.png"
     plugin_version = "1.0.1"
-    plugin_author = "你能少吃点吗"
-    author_url = "https://github.com/jxxghp/MoviePilot-Plugins"
+    plugin_author = "bingbinghj"
+    author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "temoxsignin_"
     plugin_order = 50
     auth_level = 1

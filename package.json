@@ -5,7 +5,7 @@
     "labels": "站点签到,自动登录,Discuz",
     "version": "1.0.1",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
@@ -19,7 +19,7 @@
     "labels": "签到,New API,Cookie",
     "version": "1.0.11",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
@@ -43,7 +43,7 @@
     "labels": "自动诊断,Redis,重启",
     "version": "1.0.0",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
@@ -56,11 +56,26 @@
     "labels": "签到,小黑盒,每日任务",
     "version": "1.0.0",
     "icon": "Moviepilot_A.png",
-    "author": "你能少吃点吗",
+    "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
       "v1.0.0": "首次发布，支持多账号小黑盒每日签到和原脚本支持的分享任务。"
+    }
+  },
+  "ETKScrapeWebhook": {
+    "name": "ETK刮削完成通知",
+    "description": "合并 MoviePilot 重复刮削请求，并在实际刮削完成后通知 ETK。",
+    "labels": "ETK,刮削,Webhook",
+    "version": "1.0.3",
+    "icon": "webhook.png",
+    "author": "bingbinghj",
+    "level": 1,
+    "v2": true,
+    "history": {
+      "v1.0.3": "同步修复版，增加独立刮削日志归档、主日志镜像和插件详情日志查看。",
+      "v1.0.1": "修复刮削事件接管方式，并在通知 ETK 前验证 NFO 输出。",
+      "v1.0.0": "首次发布，支持合并重复刮削请求并在完成后通知 ETK。"
     }
   }
 }
