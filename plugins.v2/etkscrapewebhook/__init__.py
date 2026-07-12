@@ -1,12 +1,14 @@
 import hashlib
+import os
 import threading
 import time
 import uuid
-from functools import wraps
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.chain.media import MediaChain
-from app.core.event import Event
+from app.core.config import settings
+from app.core.event import Event, eventmanager
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
@@ -17,7 +19,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -32,7 +34,7 @@ class ETKScrapeWebhook(_PluginBase):
     _retry_count = 2
 
     _original_scrape_handler = None
-    _installed_wrapper = None
+    _listener_installed = False
     _pending: Dict[str, Dict[str, Any]] = {}
     _lock = threading.RLock()
 
@@ -52,7 +54,7 @@ class ETKScrapeWebhook(_PluginBase):
             logger.error("【ETK刮削完成通知】Webhook地址或共享密钥未配置，插件未启用")
             self._enabled = False
             return
-        self._install_patch()
+        self._install_listener()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -176,21 +178,19 @@ class ETKScrapeWebhook(_PluginBase):
             "retry_count": 2,
         }
 
-    def _install_patch(self):
+    def _install_listener(self):
         cls = type(self)
         with cls._lock:
-            if cls._installed_wrapper is not None:
+            if cls._listener_installed:
                 return
             cls._original_scrape_handler = MediaChain.scrape_metadata_event
-            plugin = self
+            eventmanager.disable_event_handler(cls._original_scrape_handler)
+            eventmanager.add_event_listener(EventType.MetadataScrape, self._handle_scrape_event)
+            cls._listener_installed = True
+        logger.info("【ETK刮削完成通知】已接管MoviePilot元数据刮削事件")
 
-            @wraps(cls._original_scrape_handler)
-            def wrapped(chain_self, event):
-                return plugin._enqueue_scrape(chain_self, event)
-
-            cls._installed_wrapper = wrapped
-            MediaChain.scrape_metadata_event = wrapped
-        logger.info("【ETK刮削完成通知】MoviePilot刮削处理器补丁已启用")
+    def _handle_scrape_event(self, event: Event):
+        return self._enqueue_scrape(event)
 
     @staticmethod
     def _field(value: Any, name: str, default=None):
@@ -207,11 +207,12 @@ class ETKScrapeWebhook(_PluginBase):
             return None
         return hashlib.sha256(f"{storage}\n{path}".encode("utf-8")).hexdigest()
 
-    def _enqueue_scrape(self, chain_self: MediaChain, event: Event):
+    def _enqueue_scrape(self, event: Event):
         event_data = dict(getattr(event, "event_data", None) or {})
         key = self._event_key(event_data)
         if not key:
-            return type(self)._original_scrape_handler(chain_self, event)
+            logger.warning("【ETK刮削完成通知】缺少刮削根路径，已忽略请求")
+            return None
 
         incoming_files = [str(path) for path in event_data.get("file_list") or [] if path]
         with type(self)._lock:
@@ -225,7 +226,6 @@ class ETKScrapeWebhook(_PluginBase):
                 pending["event_data"].update(event_data)
             else:
                 pending = {
-                    "chain": chain_self,
                     "event_data": event_data,
                     "file_list": set(incoming_files),
                     "full_scan": not incoming_files,
@@ -267,8 +267,13 @@ class ETKScrapeWebhook(_PluginBase):
         error = ""
 
         try:
-            type(self)._original_scrape_handler(pending["chain"], event)
-            success = True
+            logger.info("【ETK刮削完成通知】MoviePilot基础刮削开始: %s", root_path)
+            type(self)._original_scrape_handler(MediaChain(), event)
+            success, error = self._verify_scrape_outputs(event_data)
+            if success:
+                logger.info("【ETK刮削完成通知】MoviePilot基础刮削输出验证成功: %s", root_path)
+            else:
+                logger.error("【ETK刮削完成通知】MoviePilot基础刮削无有效输出: %s", root_path)
         except Exception as exc:
             error = str(exc)
             logger.error("【ETK刮削完成通知】MoviePilot刮削失败: %s", exc, exc_info=True)
@@ -284,6 +289,44 @@ class ETKScrapeWebhook(_PluginBase):
 
         if not success:
             logger.error("【ETK刮削完成通知】批次刮削失败，不触发ETK处理: %s", root_path)
+
+    @classmethod
+    def _verify_scrape_outputs(cls, event_data: Dict[str, Any]) -> Tuple[bool, str]:
+        fileitem = event_data.get("fileitem")
+        root_path = Path(str(cls._field(fileitem, "path", "") or ""))
+        if not root_path.exists():
+            return False, f"MoviePilot刮削根路径不存在: {root_path}"
+
+        media_extensions = {str(ext).lower() for ext in settings.RMT_MEDIAEXT}
+        file_list = [
+            Path(str(path))
+            for path in event_data.get("file_list") or []
+            if path and Path(str(path)).suffix.lower() in media_extensions
+        ]
+        expected_nfos = [path.with_suffix(".nfo") for path in file_list]
+        if expected_nfos:
+            existing_count = sum(path.is_file() for path in expected_nfos)
+            if existing_count == len(expected_nfos):
+                return True, ""
+            return False, f"MoviePilot未生成完整分集NFO: {existing_count}/{len(expected_nfos)}"
+
+        if root_path.is_file():
+            nfo_path = root_path.with_suffix(".nfo")
+            if nfo_path.is_file():
+                return True, ""
+            return False, f"MoviePilot未生成NFO: {nfo_path}"
+
+        strm_files = sorted(root_path.rglob("*.strm"))
+        if strm_files:
+            existing_count = sum(path.with_suffix(".nfo").is_file() for path in strm_files)
+            if existing_count == len(strm_files):
+                return True, ""
+            return False, f"MoviePilot未生成完整STRM NFO: {existing_count}/{len(strm_files)}"
+
+        for _, _, filenames in os.walk(root_path):
+            if any(filename.lower().endswith(".nfo") for filename in filenames):
+                return True, ""
+        return False, f"MoviePilot刮削目录内未找到NFO: {root_path}"
 
     def _build_payload(
         self,
@@ -365,12 +408,10 @@ class ETKScrapeWebhook(_PluginBase):
                     timer.cancel()
             cls._pending.clear()
 
-            if (
-                cls._installed_wrapper is not None
-                and MediaChain.scrape_metadata_event is cls._installed_wrapper
-                and cls._original_scrape_handler is not None
-            ):
-                MediaChain.scrape_metadata_event = cls._original_scrape_handler
-            cls._installed_wrapper = None
+            if cls._listener_installed:
+                eventmanager.remove_event_listener(EventType.MetadataScrape, self._handle_scrape_event)
+                if cls._original_scrape_handler is not None:
+                    eventmanager.enable_event_handler(cls._original_scrape_handler)
+            cls._listener_installed = False
             cls._original_scrape_handler = None
         self._enabled = False

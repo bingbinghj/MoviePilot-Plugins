@@ -1,6 +1,8 @@
 # ETK刮削完成通知
 
-MoviePilot专用插件。它会按媒体根目录防抖合并重复的 `MetadataScrape`，只执行一次MoviePilot刮削；原刮削方法返回后，再通知ETK执行增强刮削。
+MoviePilot专用插件。它会按媒体根目录防抖合并重复的 `MetadataScrape`，只执行一次MoviePilot基础刮削；MoviePilot生成NFO并通过输出校验后，再通知ETK执行后置增强。
+
+插件启用时会显式停用MoviePilot原始 `MetadataScrape` 监听器，改由插件监听、合并后直接调用原处理器。停用插件时恢复MoviePilot原监听器。如MoviePilot未生成目标NFO，批次会标记为失败，ETK不会接管。
 
 ## 安装
 
