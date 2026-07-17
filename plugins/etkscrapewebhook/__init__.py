@@ -19,7 +19,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.0.6"
+    plugin_version = "1.0.7"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -244,9 +244,18 @@ class ETKScrapeWebhook(_PluginBase):
                 timer = pending.get("timer")
                 if timer:
                     timer.cancel()
+                previous_mediainfo = pending["event_data"].get("mediainfo")
+                previous_episode_group = str(
+                    self._field(previous_mediainfo, "episode_group", "") or ""
+                )
+                incoming_episode_group = str(
+                    self._field(event_data.get("mediainfo"), "episode_group", "") or ""
+                )
                 pending["file_list"].update(incoming_files)
-                pending["full_scan"] = pending["full_scan"] or not incoming_files
+                pending["full_scan"] = not bool(pending["file_list"])
                 pending["event_data"].update(event_data)
+                if previous_episode_group and not incoming_episode_group:
+                    pending["event_data"]["mediainfo"] = previous_mediainfo
             else:
                 pending = {
                     "event_data": event_data,
@@ -400,10 +409,15 @@ class ETKScrapeWebhook(_PluginBase):
                     timeout=self._timeout_seconds,
                 ).post_res(self._webhook_url, json=payload)
                 if response and 200 <= response.status_code < 300:
+                    file_count = len(payload.get("file_list") or [])
+                    scope_label = f"精确文件 {file_count} 个" if file_count else "整目录"
+                    episode_group = payload.get("episode_group") or "官方季"
                     logger.info(
-                        "【ETK刮削完成通知】ETK已接收批次 %s: %s",
+                        "【ETK刮削完成通知】ETK已接收批次 %s: %s，范围: %s，剧集组: %s",
                         payload["batch_id"],
                         payload["root_path"],
+                        scope_label,
+                        episode_group,
                     )
                     return
                 detail = response.text if response is not None else "无响应"
