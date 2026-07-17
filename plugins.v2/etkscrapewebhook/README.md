@@ -6,6 +6,8 @@ MoviePilot专用插件。它会按媒体根目录防抖合并重复的 `Metadata
 
 MoviePilot会把插件调用链产生的内置刮削日志归档到 `plugins/etkscrapewebhook.log`。插件不提供详情页面，也不向主 `moviepilot.log` 复制刮削明细；通过插件卡片右下角菜单的原生“查看日志”打开完整日志界面。
 
+插件会把MoviePilot整理阶段已选定的`episode_group`原样传给ETK；未选定时传递空值，明确表示使用TMDb官方季。ETK不会对MoviePilot批次再猜测、回退或改选其他剧集组。
+
 插件日志固定按5MB轮转，保留当前日志和10个备份文件。
 
 ## 安装

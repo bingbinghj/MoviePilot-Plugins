@@ -19,7 +19,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.0.5"
+    plugin_version = "1.0.6"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -380,6 +380,7 @@ class ETKScrapeWebhook(_PluginBase):
             "duration_seconds": duration,
             "media_type": str(media_type or ""),
             "tmdb_id": str(tmdb_id or ""),
+            "episode_group": str(self._field(mediainfo, "episode_group", "") or ""),
             "root_path": str(self._field(fileitem, "path", "") or ""),
             "storage": str(self._field(fileitem, "storage", "") or ""),
             "file_list": [str(path) for path in event_data.get("file_list") or [] if path],
