@@ -3,55 +3,50 @@
     "name": "中国特摄联盟自动登录",
     "description": "每天自动登录中国特摄联盟，并处理站点算术验证。",
     "labels": "站点签到,自动登录,Discuz",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
-    "system_version": ">=2.12.0",
-    "level": 1,
-    "v3": false
+    "system_version": ">=3.0.0",
+    "level": 1
   },
   "NewApiCheckin": {
     "name": "New API每日签到",
     "description": "支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。",
     "labels": "签到,New API,Cookie",
-    "version": "1.0.11",
+    "version": "1.0.12",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
-    "system_version": ">=2.12.0",
-    "level": 1,
-    "v3": false
+    "system_version": ">=3.0.0",
+    "level": 1
   },
   "RedisAutoRestart": {
     "name": "Redis异常自动重启",
     "description": "检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。",
     "labels": "自动诊断,Redis,重启",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
-    "system_version": ">=2.12.0",
-    "level": 1,
-    "v3": false
+    "system_version": ">=3.0.0",
+    "level": 1
   },
   "HeyboxSignin": {
     "name": "小黑盒每日任务",
     "description": "根据小黑盒 App 接口执行每日签到和支持的每日任务。",
     "labels": "签到,小黑盒,每日任务",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
-    "system_version": ">=2.12.0",
-    "level": 1,
-    "v3": false
+    "system_version": ">=3.0.0",
+    "level": 1
   },
   "ETKScrapeWebhook": {
     "name": "ETK刮削完成通知",
     "description": "合并 MoviePilot 重复刮削请求，并在实际刮削完成后通知 ETK。",
     "labels": "ETK,刮削,Webhook",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "icon": "webhook.png",
     "author": "bingbinghj",
-    "system_version": ">=2.12.0",
-    "level": 1,
-    "v3": false
+    "system_version": ">=3.0.0",
+    "level": 1
   }
 }

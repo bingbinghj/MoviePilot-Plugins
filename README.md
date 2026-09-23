@@ -1,6 +1,6 @@
 # MoviePilot-Plugins
 
-个人维护的 MoviePilot 插件仓库，主要用于 MoviePilot V2。
+个人维护的 MoviePilot 插件仓库，同时提供 MoviePilot V2 与 V3 独立版本。
 
 维护者：[bingbinghj](https://github.com/bingbinghj)
 
@@ -176,16 +176,33 @@ ETKScrapeWebhook
 
 ## 兼容结构
 
-当前仓库同时保留两套结构：
+当前仓库同时保留三套结构：
 
 ```text
 package.json
 plugins/
 package.v2.json
 plugins.v2/
+package.v3.json
+plugins.v3/
 ```
 
-这样可以兼容仍读取 `package.json` / `plugins/` 的 MoviePilot 版本，也能兼容读取 `package.v2.json` / `plugins.v2/` 的 V2 插件市场逻辑。
+V2继续读取原有索引和目录，V3使用`package.v3.json` / `plugins.v3/`。所有五个插件均有原生V3版本，旧目录明确标记不供V3回退加载。
+
+## MoviePilot V3适配
+
+| 插件 | V3版本 | 适配内容 |
+| --- | --- | --- |
+| 中国特摄联盟自动登录 | 1.0.2 | 稳定SDK、配置持久化、事件命令与定时任务 |
+| New API每日签到 | 1.0.12 | 稳定SDK及CloakBrowser启动接口，确保浏览器资源释放 |
+| Redis异常自动重启 | 1.0.1 | 稳定SDK及V3缓存后端配置，跳过未启用的Redis |
+| 小黑盒每日任务 | 1.0.1 | 稳定SDK、账号配置、事件命令与定时任务 |
+| ETK刮削完成通知 | 1.0.9 | 包含1.0.8整批等待修复，适配刮削入口、来源身份和日志写入器 |
+
+V3仍使用同一个仓库地址，刷新市场后安装对应插件即可。账号和配置键沿用原有名称。
+ETK增强以TMDb影视为目标；音乐及无TMDb身份的其他来源继续使用MoviePilot原生刮削。
+
+测试方法及官方运行时验证基准见[测试说明](tests/README.md)。
 
 ## 免责声明
 
