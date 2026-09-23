@@ -153,7 +153,8 @@ ETKScrapeWebhook
 
 功能：
 
-- 按媒体根目录合并短时间内重复触发的 `MetadataScrape` 请求。
+- 按媒体根目录合并 `MetadataScrape` 请求，并等待同一媒体本批整理任务全部结束。
+- 1.0.8 会检查 MoviePilot 整理队列；同根刮削串行，刮削期间新到的文件合并后再通知 ETK。
 - 由插件接管并执行 MoviePilot 基础刮削，避免逐集请求重复刮削。
 - 验证目标 NFO 已生成后，再通知 ETK 执行后置增强。
 - MoviePilot 基础刮削失败或 NFO 输出不完整时不会通知 ETK。
@@ -168,7 +169,7 @@ ETKScrapeWebhook
 
 - `ETK Webhook地址`：例如 `http://emby-toolkit:5257/webhook/moviepilot`。
 - `ETK Webhook共享密钥`：与 ETK 中配置的 Emby Webhook 共享密钥一致。
-- `合并等待(秒)`：建议保持默认 10 秒。
+- `合并等待(秒)`：建议保持默认 10 秒；这是合并事件及检查整理状态的间隔，不代表等待 10 秒后整批就已完成。
 - `请求超时(秒)` / `失败重试`：控制通知 ETK 时的请求超时和重试次数。
 
 使用本插件时，应避免同时启用多个自动刮削入口和 ETK 实时文件监控，否则可能在 MoviePilot 基础刮削完成前提前触发 ETK。
