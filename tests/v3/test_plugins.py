@@ -1,36 +1,30 @@
-"""使用真实 MoviePilot v3 SDK、临时 SQLite 和媒体 DTO；外部服务调用均隔离。"""
+"""Load real V3 SDK and isolated database; replace external accounts and process exits."""
+
 import importlib
 import json
 import os
 from pathlib import Path
 import sys
-import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, os.environ.get('MOVIEPILOT_BACKEND', '/app'))
+sys.path.insert(0, os.environ.get("MOVIEPILOT_BACKEND", "/app"))
 from app.testing.bootstrap import prepare_v3_backend
 prepare_v3_backend(REPO)
-
 from app.sdk.config import settings
 from app.sdk.events import Event, eventmanager
-from app.sdk.media import MediaInfo, MusicInfo
 from app.sdk.plugin import _PluginBase
-from app.schemas.file import FileItem
-from app.schemas.context import MediaInfo as MediaDTO
-from app.schemas.transfer import TransferJob, TransferJobTask
-from app.schemas.types import EventType, MediaSource, MediaType
+from app.schemas.types import EventType
 
-NAMES = ['TemoxSignin', 'NewApiCheckin', 'RedisAutoRestart', 'HeyboxSignin', 'ETKScrapeWebhook']
-MODULES = {name: importlib.import_module(f'app.plugins.{name.lower()}') for name in NAMES}
+NAMES = ["TemoxSignin", "RedisAutoRestart", "HeyboxSignin"]
+MODULES = {name: importlib.import_module(f"app.plugins.{name.lower()}") for name in NAMES}
 CLASSES = {name: getattr(module, name) for name, module in MODULES.items()}
-ETK = MODULES['ETKScrapeWebhook']
-CHAIN_PATCH = patch('app.sdk.plugin.base.PluginChain', return_value=Mock())
+ACTIONS = {name: "check" if name == "RedisAutoRestart" else "signin" for name in NAMES}
+CHAIN_PATCH = patch("app.sdk.plugin.base.PluginChain", return_value=Mock())
 
 
 def setUpModule():
-    # SDK/数据库真实运行，通知与模块调度不启动外部宿主服务。
     CHAIN_PATCH.start()
 
 
@@ -38,237 +32,230 @@ def tearDownModule():
     CHAIN_PATCH.stop()
 
 
-class PluginHostContractTests(unittest.TestCase):
-    def test_all_five_market_entries_match_native_classes(self):
-        manifest = json.loads((REPO / 'package.v3.json').read_text())
-        self.assertEqual(set(manifest), set(NAMES))
-        for name in NAMES:
-            with self.subTest(plugin=name):
-                self.assertTrue(issubclass(CLASSES[name], _PluginBase))
-                self.assertEqual(manifest[name]['version'], CLASSES[name].plugin_version)
-                self.assertEqual(manifest[name]['system_version'], '>=3.0.0')
-
-    def test_v3_market_selects_native_packages_and_rejects_legacy_fallback(self):
+class HostContracts(unittest.TestCase):
+    def test_market_and_retired_plugins(self):
         from app.adapters.external.plugin.client import PluginMarketTransport
-        manifest = json.loads((REPO / 'package.v3.json').read_text())
-        with patch('app.adapters.external.plugin.client.get_runtime_setting', return_value='v3'):
-            self.assertEqual(PluginMarketTransport._package_version_candidates('v3')[0], 'v3')
-            for name in NAMES:
-                self.assertTrue(PluginMarketTransport.is_package_plugin_compatible(manifest[name], 'v3'))
-                for filename, generation in [('package.json', ''), ('package.v2.json', 'v2')]:
-                    old = json.loads((REPO / filename).read_text())[name]
-                    self.assertFalse(PluginMarketTransport.is_package_plugin_compatible(old, generation))
+        with patch("app.adapters.external.plugin.client.get_runtime_setting", return_value="v3"):
+            for filename, tree, generation in [("package.json", "plugins", ""),
+                                               ("package.v2.json", "plugins.v2", "v2"),
+                                               ("package.v3.json", "plugins.v3", "v3")]:
+                manifest = json.loads((REPO / filename).read_text(encoding="utf-8"))
+                self.assertEqual(set(manifest), set(NAMES))
+                for retired in ("newapicheckin", "etkscrapewebhook"):
+                    self.assertFalse((REPO / tree / retired).exists())
+                for name, entry in manifest.items():
+                    self.assertEqual(PluginMarketTransport.is_package_plugin_compatible(entry, generation),
+                                     generation == "v3")
+                    if generation == "v3":
+                        self.assertTrue(issubclass(CLASSES[name], _PluginBase))
+                        self.assertEqual(entry["version"], CLASSES[name].plugin_version)
+                        self.assertEqual(entry["version"], "2.0.0")
+                        self.assertEqual(entry["system_version"], ">=3.0.0")
+                        self.assertEqual(next(iter(entry["history"])), "v2.0.0")
 
-    def test_all_five_forms_pages_and_persistent_config(self):
+    def test_persistence_forms_and_stop(self):
         for name in NAMES:
             with self.subTest(plugin=name):
                 plugin = CLASSES[name]()
                 form, defaults = plugin.get_form()
-                config = {**defaults, 'enabled': False, 'onlyonce': False, 'notify': False}
-                plugin.update_config(config)
-                plugin.init_plugin(plugin.get_config())
-                self.assertFalse(plugin.get_state())
+                plugin.update_config({**defaults, "enabled": True, "notify": False})
+                plugin.save_data("v3_test", {"name": name})
+                reloaded = CLASSES[name]()
+                reloaded.init_plugin(reloaded.get_config())
+                self.assertTrue(reloaded.get_state())
                 self.assertIsInstance(form, list)
-                self.assertIsInstance(defaults, dict)
-                self.assertTrue(plugin.get_page() is None or isinstance(plugin.get_page(), list))
-                plugin.save_data('v3_contract_test', {'name': name})
-                self.assertEqual(plugin.get_data('v3_contract_test'), {'name': name})
-                plugin.stop_service()
+                self.assertIsInstance(reloaded.get_page(), list)
+                self.assertEqual(reloaded.get_data("v3_test"), {"name": name})
+                reloaded.stop_service()
+                reloaded.stop_service()
+                self.assertFalse(reloaded.get_state())
 
-    def test_four_scheduled_plugins_register_working_cron_and_api(self):
-        for name in NAMES[:-1]:
+    def test_cron_timezone_and_repeat_initialization(self):
+        for name in NAMES:
+            with self.subTest(plugin=name), patch.object(settings, "TZ", "Europe/London"):
+                plugin = CLASSES[name]()
+                plugin.init_plugin({"enabled": True, "notify": False, "cron": "1 2 * * *"})
+                service = plugin.get_service()[0]
+                self.assertEqual(str(service["trigger"].timezone), "Europe/London")
+                self.assertTrue(callable(service["func"]))
+                plugin.init_plugin({"enabled": True, "notify": False})
+                self.assertEqual(plugin._cron, plugin.get_form()[1]["cron"])
+                plugin.init_plugin({"enabled": True, "notify": False, "cron": "invalid"})
+                self.assertEqual(plugin.get_service(), [])
+                plugin.stop_service()
+                self.assertEqual(plugin.get_service(), [])
+
+    def test_command_dispatch_and_late_events(self):
+        for name in NAMES:
             with self.subTest(plugin=name):
                 plugin = CLASSES[name]()
-                plugin.init_plugin({'enabled': True, 'notify': False})
-                services = plugin.get_service()
-                self.assertEqual(len(services), 1)
-                self.assertTrue(callable(services[0]['func']))
-                self.assertTrue(hasattr(services[0]['trigger'], 'get_next_fire_time'))
-                api = plugin.get_api()[0]
-                self.assertEqual(api['methods'], ['POST'])
-                self.assertEqual(api['auth'], 'bear')
-                self.assertTrue(callable(api['endpoint']))
-                plugin.stop_service()
-
-    def test_manual_commands_dispatch_and_ignore_other_actions(self):
-        for name, remote, action in [
-            ('TemoxSignin', 'remote_signin', 'signin'),
-            ('NewApiCheckin', 'remote_checkin', 'checkin'),
-            ('RedisAutoRestart', 'remote_check', 'check'),
-            ('HeyboxSignin', 'remote_signin', 'signin'),
-        ]:
-            with self.subTest(plugin=name):
-                plugin = CLASSES[name]()
-                with patch.object(plugin, action) as execute:
-                    getattr(plugin, remote)(Event(EventType.PluginAction, plugin.get_command()[0]['data']))
+                plugin.init_plugin({"notify": False})
+                remote = getattr(plugin, "remote_check" if name == "RedisAutoRestart" else "remote_signin")
+                data = plugin.get_command()[0]["data"]
+                with patch.object(plugin, ACTIONS[name]) as execute:
+                    remote(Event(EventType.PluginAction, data))
                     execute.assert_called_once_with(manual=True)
-                    getattr(plugin, remote)(Event(EventType.PluginAction, {'action': 'unrelated'}))
+                    remote(Event(EventType.PluginAction, {"action": "unrelated"}))
+                    plugin.stop_service()
+                    remote(Event(EventType.PluginAction, data))
                     self.assertEqual(execute.call_count, 1)
 
-    def test_run_once_is_persistently_reset_for_four_plugins(self):
-        for name, action in [('TemoxSignin', 'signin'), ('NewApiCheckin', 'checkin'),
-                             ('RedisAutoRestart', 'check'), ('HeyboxSignin', 'signin')]:
+    def test_run_once_reset_before_failure_on_early_hosts(self):
+        for name in NAMES:
             with self.subTest(plugin=name):
                 plugin = CLASSES[name]()
-                with patch.object(plugin, action) as execute:
-                    plugin.init_plugin({'onlyonce': True, 'notify': False})
+                with patch.object(MODULES[name].scheduler_sdk, "add_plugin_once_job", None), \
+                     patch.object(plugin, ACTIONS[name], side_effect=RuntimeError("test failure")) as execute:
+                    with self.assertRaisesRegex(RuntimeError, "test failure"):
+                        plugin.init_plugin({"onlyonce": True, "notify": False})
                     execute.assert_called_once_with(manual=True)
-                self.assertFalse(plugin.get_config()['onlyonce'])
+                self.assertFalse(plugin.get_config()["onlyonce"])
+
+    def test_queued_run_once_cancelled_on_stop_and_reinit(self):
+        for name in NAMES:
+            with self.subTest(plugin=name):
+                plugin = CLASSES[name]()
+                with patch.object(MODULES[name].scheduler_sdk, "add_plugin_once_job", return_value=True) as add, \
+                     patch.object(MODULES[name].scheduler_sdk, "remove_plugin_once_job") as remove, \
+                     patch.object(plugin, ACTIONS[name]) as execute:
+                    plugin.init_plugin({"enabled": True, "onlyonce": True, "notify": False})
+                    execute.assert_not_called()
+                    self.assertFalse(plugin.get_config()["onlyonce"])
+                    self.assertEqual(add.call_args.args[:2], (name, "run_once"))
+                    callback = add.call_args.args[2]
+                    callback()
+                    execute.assert_called_once_with(manual=True)
+                    plugin.stop_service()
+                    callback()
+                    self.assertEqual(execute.call_count, 1)
+                    remove.assert_any_call(name, "run_once")
+                    plugin.init_plugin({"notify": False})
+                    self.assertFalse(plugin.get_state())
+
+    def test_real_dynamic_api_registration_response_and_reload(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from app.adapters.web.plugin.routes import FastAPIDynamicRouteRegistry
+        instances = {name: CLASSES[name]() for name in NAMES}
+        for plugin in instances.values():
+            plugin.init_plugin({"notify": False, "direct_check": False})
+
+        def apis(name):
+            return [{**api, "path": f"/{name}{api['path']}"} for api in instances[name].get_api()]
+
+        app, log = FastAPI(), Mock()
+        registry = FastAPIDynamicRouteRegistry(
+            app, lambda: NAMES, apis, lambda: None, lambda: None, "/api/v1/plugin", log)
+        registry.update(None, "add")
+        registry.update(None, "add")
+        log.error.assert_not_called()
+        with TestClient(app) as client:
+            for name in NAMES:
+                api = instances[name].get_api()[0]
+                url = f"/api/v1/plugin/{name}{api['path']}"
+                response = client.post(url)
+                self.assertEqual(response.status_code, 200, response.text)
+                result = api["response_model"].model_validate(response.json())
+                self.assertFalse(result.success)
+                self.assertNotIn("data", response.json())
+                schema = app.openapi()["paths"][url]["post"]["responses"]["200"]
+                self.assertIn("$ref", schema["content"]["application/json"]["schema"])
+                self.assertEqual(sum(getattr(route, "path", None) == url for route in app.routes), 1)
+        for name in NAMES:
+            registry.update(name, "remove")
+            instances[name].stop_service()
+
+    def test_event_registration_unique_after_module_reload(self):
+        for name in NAMES:
+            importlib.reload(MODULES[name])
+            rows = [row for row in eventmanager.visualize_handlers() if f".{name.lower()}." in str(row)]
+            self.assertEqual(len(rows), 1, rows)
 
 
-class ETKV3Tests(unittest.TestCase):
-    def setUp(self):
-        self.plugin = ETK.ETKScrapeWebhook()
-        self.plugin._enabled = True
-        self.plugin._send_webhook = Mock()
-        chain_patch = patch.object(ETK, 'TransferChain')
-        self.chain = chain_patch.start()
-        self.addCleanup(chain_patch.stop)
-        self.chain.return_value.get_queue_tasks.return_value = []
-        for patcher in (patch.object(ETK.threading, 'Timer'),
-                        patch.object(ETK.ScrapingChain, '__init__', return_value=None)):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        self.original = Mock()
-        type(self.plugin)._original_scrape_handler = self.original
+class RedisAndResources(unittest.TestCase):
+    def test_redis_backend_and_manual_override(self):
+        plugin = CLASSES["RedisAutoRestart"]()
+        with patch.object(settings, "CACHE_BACKEND_TYPE", "redis"), \
+             patch.object(settings, "CACHE_BACKEND_URL", "rediss://cache.example:6380/2"):
+            self.assertEqual(plugin._RedisAutoRestart__settings_redis_url(), "rediss://cache.example:6380/2")
+        with patch.object(settings, "CACHE_BACKEND_TYPE", "cachetools"), patch("redis.Redis.from_url") as connect:
+            self.assertFalse(plugin._RedisAutoRestart__check_redis()["failed"])
+            connect.assert_not_called()
+            plugin._redis_url = "redis://manual.example/1"
+            plugin._RedisAutoRestart__check_redis()
+            self.assertEqual(connect.call_args.args[0], plugin._redis_url)
 
-    def tearDown(self):
-        self.plugin.stop_service()
-
-    def event_data(self, path='/tmp/Show', source=MediaSource.TMDB, media_id='85995'):
-        return {
-            'fileitem': FileItem(storage='local', path=path, type='dir', name='Show'),
-            'mediainfo': MediaInfo(media_source=source, media_id=media_id, type=MediaType.TV),
-            'file_list': [],
-        }
-
-    def test_native_identity_generates_tmdb_payload_and_episode_group(self):
-        data = self.event_data()
-        data['mediainfo'].episode_group = 'selected-group'
-        payload = self.plugin._build_payload(event_data=data, batch_id='batch', success=True, error='', duration=1)
-        self.assertEqual(payload['tmdb_id'], '85995')
-        self.assertEqual(payload['media_type'], '电视剧')
-        self.assertEqual(payload['episode_group'], 'selected-group')
-
-    def test_different_source_with_same_number_is_not_same_transfer(self):
-        data = self.event_data()
-        job = TransferJob(media=MediaDTO(media_source=MediaSource.Douban, media_id='85995', type='电视剧'),
-                          tasks=[TransferJobTask(state='running')])
-        self.chain.return_value.get_queue_tasks.return_value = [job]
-        self.assertFalse(self.plugin._has_pending_transfer(data))
-        job.media.media_source = MediaSource.TMDB
-        self.assertTrue(self.plugin._has_pending_transfer(data))
-
-    def test_slow_51_file_job_only_notifies_when_all_transfers_finish(self):
-        data = self.event_data()
-        job = TransferJob(media=MediaDTO(media_source=MediaSource.TMDB, media_id='85995', type='电视剧'),
-                          tasks=[TransferJobTask(state='waiting') for _ in range(51)])
-        self.chain.return_value.get_queue_tasks.return_value = [job]
-        with patch.object(self.plugin, '_verify_scrape_outputs', return_value=(True, '')):
-            for index, task in enumerate(job.tasks):
-                task.state = 'running'
-                self.plugin._handle_scrape_event(Event(EventType.MetadataScrape, {
-                    **data, 'file_list': [f'/tmp/Show/E{index}.strm'],
-                }))
-                key = self.plugin._event_key(data)
-                self.plugin._flush_scrape(key)
-                self.original.assert_not_called()
-                task.state = 'completed'
-            self.plugin._flush_scrape(key)
-        self.original.assert_called_once()
-        self.plugin._send_webhook.assert_called_once()
-        self.assertEqual(len(self.plugin._send_webhook.call_args.args[0]['file_list']), 51)
-
-    def test_music_and_non_tmdb_media_keep_native_scraping(self):
-        for media in [MusicInfo(media_source=MediaSource.MusicBrainz, media_id='music-id'),
-                      MediaInfo(media_source=MediaSource.Douban, media_id='123', type=MediaType.TV)]:
-            with self.subTest(media_type=media.type):
-                event = Event(EventType.MetadataScrape, {**self.event_data(), 'mediainfo': media})
-                self.plugin._handle_scrape_event(event)
-        self.assertEqual(self.original.call_count, 2)
-        self.plugin._send_webhook.assert_not_called()
-
-    def test_late_music_event_after_stop_does_not_call_cleared_handler(self):
-        event = Event(EventType.MetadataScrape, {
-            **self.event_data(),
-            'mediainfo': MusicInfo(media_source=MediaSource.MusicBrainz, media_id='music-id'),
-        })
-        self.plugin.stop_service()
-        self.assertIsNone(self.plugin._handle_scrape_event(event))
-        self.original.assert_not_called()
-
-    def test_listener_replaces_and_restores_real_scraping_chain(self):
-        self.plugin._install_listener()
-        handlers = eventmanager.visualize_handlers()
-        native = [row for row in handlers if 'ScrapingChain.scrape_metadata_event' in str(row)]
-        self.assertTrue(native)
-        self.assertTrue(all(row['status'] == 'disabled' for row in native))
-        self.plugin.stop_service()
-        self.assertFalse(type(self.plugin)._listener_installed)
-        native = [row for row in eventmanager.visualize_handlers()
-                  if 'ScrapingChain.scrape_metadata_event' in row['handler_identifier']]
-        self.assertTrue(all(row['status'] == 'enabled' for row in native))
-
-    def test_enabled_plugin_initialization_uses_v3_logger_and_listener(self):
-        with patch.object(ETK.LoggerManager, 'current_writer', return_value=None):
-            self.plugin.init_plugin({'enabled': True, 'webhook_url': 'http://etk.invalid/webhook/moviepilot', 'secret': 'test'})
-        self.assertTrue(self.plugin.get_state())
-        self.assertTrue(type(self.plugin)._listener_installed)
-        self.assertIs(type(self.plugin)._original_scrape_handler, ETK.ScrapingChain.scrape_metadata_event)
-
-    def test_v3_log_writer_rotation_and_missing_writer(self):
-        with tempfile.TemporaryDirectory() as directory:
-            with patch.object(type(self.plugin), '_plugin_log_path', return_value=Path(directory) / 'etk.log'):
-                writer = Mock()
-                handler = writer._get_rotating_handler.return_value
-                with patch.object(ETK.LoggerManager, 'current_writer', return_value=writer):
-                    self.plugin._configure_plugin_log_rotation()
-                self.assertEqual(handler.maxBytes, 5 * 1024 * 1024)
-                self.assertEqual(handler.backupCount, 10)
-                with patch.object(ETK.LoggerManager, 'current_writer', return_value=None):
-                    self.plugin._configure_plugin_log_rotation()
-
-
-class BrowserAndRedisV3Tests(unittest.TestCase):
-    def test_browser_sdk_releases_context_on_success_and_failure(self):
-        module = MODULES['NewApiCheckin']
-        plugin = CLASSES['NewApiCheckin']()
+    def test_redis_client_closed_on_success_and_failure(self):
+        plugin = CLASSES["RedisAutoRestart"]()
+        plugin._redis_url = "redis://test.invalid/0"
         for fail in (False, True):
-            with self.subTest(failure=fail):
-                context = Mock()
-                page = context.new_page.return_value
-                page.context = context
-                page.content.return_value = '<html>signed in</html>'
-                page.evaluate.return_value = 'signed in'
-                page.title.return_value = 'site'
-                page.url = 'https://example.invalid/console'
-                page.goto.return_value.status = 200
-                context.cookies.return_value = [{'name': 'session', 'value': 'test'}]
-                if fail:
-                    page.goto.side_effect = RuntimeError('navigation failed')
-                with patch.object(module, 'launch_browser_context', return_value=context) as launch:
-                    if fail:
-                        with self.assertRaisesRegex(RuntimeError, 'navigation failed'):
-                            plugin._NewApiCheckin__run_browser_action(page.url, [], {}, 1)
-                    else:
-                        result = plugin._NewApiCheckin__run_browser_action(page.url, [], {}, 1)
-                        self.assertEqual(result['status'], 200)
-                        self.assertEqual(result['text'], 'signed in')
-                    launch.assert_called_once_with(headless=True)
-                context.close.assert_called_once()
+            with self.subTest(fail=fail), patch("redis.Redis.from_url") as connect:
+                client = connect.return_value
+                client.ping.side_effect = RuntimeError("ping failed") if fail else None
+                client.ping.return_value = True
+                self.assertEqual(plugin._RedisAutoRestart__check_redis()["failed"], fail)
+                client.close.assert_called_once()
 
-    def test_redis_reads_v3_backend_url_only_when_selected(self):
-        plugin = CLASSES['RedisAutoRestart']()
-        with patch.object(settings, 'CACHE_BACKEND_TYPE', 'redis'), \
-             patch.object(settings, 'CACHE_BACKEND_URL', 'redis://cache.example:6380/2'):
-            self.assertEqual(plugin._RedisAutoRestart__settings_redis_url(), 'redis://cache.example:6380/2')
-        with patch.object(settings, 'CACHE_BACKEND_TYPE', 'cachetools'), \
-             patch.object(settings, 'CACHE_BACKEND_URL', 'redis://localhost:6379'):
-            self.assertEqual(plugin._RedisAutoRestart__settings_redis_url(), '')
-            result = plugin._RedisAutoRestart__check_redis()
-            self.assertFalse(result['failed'])
-            self.assertTrue(result['inconclusive'])
+    def test_notify_and_missing_command_do_not_claim_restart(self):
+        for mode in ("notify", "command"):
+            plugin = CLASSES["RedisAutoRestart"]()
+            plugin.init_plugin({"enabled": True, "notify": False, "restart_mode": mode, "failure_threshold": 1})
+            plugin.del_data("runtime_state")
+            with patch.object(plugin, "_RedisAutoRestart__check_redis",
+                              return_value={"failed": True, "message": "test failure"}):
+                self.assertFalse(plugin.check()["restart_triggered"])
+            self.assertNotIn("last_restart_at", plugin.get_data("runtime_state"))
+            plugin.stop_service()
+
+    def test_pending_exit_cancelled_on_both_modern_and_early_hosts(self):
+        plugin = CLASSES["RedisAutoRestart"]()
+        module = MODULES["RedisAutoRestart"]
+        plugin.init_plugin({"enabled": True, "notify": False, "restart_delay": 30})
+        with patch.object(module.scheduler_sdk, "add_plugin_once_job", return_value=True) as add, \
+             patch.object(module.scheduler_sdk, "remove_plugin_once_job") as remove, \
+             patch.object(module.os, "_exit") as exit_process:
+            self.assertTrue(plugin._RedisAutoRestart__trigger_restart("test")[0])
+            callback = add.call_args.args[2]
+            self.assertEqual(add.call_args.args[:2], ("RedisAutoRestart", "restart_exit"))
+            plugin.stop_service()
+            callback()
+            exit_process.assert_not_called()
+            remove.assert_any_call("RedisAutoRestart", "restart_exit")
+        plugin.init_plugin({"enabled": True, "notify": False, "restart_delay": 30})
+        with patch.object(module.scheduler_sdk, "add_plugin_once_job", None), \
+             patch.object(module.os, "_exit") as exit_process:
+            plugin._RedisAutoRestart__trigger_restart("test")
+            thread = plugin._restart_thread
+            self.assertTrue(thread.is_alive())
+            plugin.stop_service()
+            self.assertFalse(thread.is_alive())
+            exit_process.assert_not_called()
+
+    def test_temox_session_closed_on_success_and_failure(self):
+        plugin = CLASSES["TemoxSignin"]()
+        plugin.init_plugin({"username": "test", "password": "test", "notify": False})
+        for fail in (False, True):
+            with patch.object(MODULES["TemoxSignin"].requests, "Session") as session, \
+                 patch.object(plugin, "_TemoxSignin__get_with_gate") as get, \
+                 patch.object(plugin, "_TemoxSignin__response_text", return_value="welcome"), \
+                 patch.object(plugin, "_TemoxSignin__extract_login_form", return_value=None), \
+                 patch.object(plugin, "_TemoxSignin__is_logged_in", return_value=True):
+                get.side_effect = RuntimeError("test error") if fail else None
+                self.assertEqual(plugin.signin()["success"], not fail)
+                session.return_value.close.assert_called_once()
+
+    def test_heybox_session_closed_on_success_and_failure(self):
+        plugin = CLASSES["HeyboxSignin"]()
+        plugin.init_plugin({"account_1_cookie": "test", "notify": False})
+        item = {"success": True, "name": "test", "heybox_id": "12345", "message": "done", "detail": ""}
+        for fail in (False, True):
+            with patch.object(MODULES["HeyboxSignin"], "HeyboxAccount"), \
+                 patch.object(MODULES["HeyboxSignin"], "HeyboxClient") as client, \
+                 patch.object(plugin, "_HeyboxSignin__run_account", return_value=item) as run:
+                run.side_effect = RuntimeError("test error") if fail else None
+                self.assertEqual(plugin.signin()["success"], not fail)
+                client.return_value.session.close.assert_called_once()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

@@ -17,10 +17,8 @@ https://github.com/bingbinghj/MoviePilot-Plugins
 | 插件 ID | 名称 | 说明 |
 | --- | --- | --- |
 | `TemoxSignin` | 中国特摄联盟自动登录 | 每天自动登录中国特摄联盟，并处理站点算术验证。 |
-| `NewApiCheckin` | New API每日签到 | 支持多个 New API 站点每日签到，每个站点独立配置 URL、用户 ID 和 Cookie。 |
 | `RedisAutoRestart` | Redis异常自动重启 | 检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。 |
 | `HeyboxSignin` | 小黑盒每日任务 | 根据小黑盒 App 接口执行每日签到和支持的每日任务。 |
-| `ETKScrapeWebhook` | ETK刮削完成通知 | 合并 MoviePilot 重复刮削请求，并在基础刮削完成后通知 ETK。 |
 
 ## 安装方式
 
@@ -63,41 +61,11 @@ http://bt.temox.com:8080
 配置项：
 
 - `启用插件`：开启定时任务。
-- `仅运行一次`：保存配置后立即执行一次。
+- `仅运行一次`：保存配置后执行一次；V3 使用宿主任务接口时约 3 秒后运行。
 - `发送通知`：执行结束后发送 MoviePilot 通知。
 - `用户名` / `密码`：中国特摄联盟账号密码。
 - `Cron 表达式`：默认每天执行一次。
 - `安全提问编号` / `安全提问答案`：账号设置了 Discuz 安全提问时填写，未设置保持默认。
-
-## New API每日签到
-
-插件 ID：
-
-```text
-NewApiCheckin
-```
-
-功能：
-
-- 支持多个 New API 站点。
-- 支持点击新增站点，每个站点独立配置。
-- 使用 Cookie + New API 用户 ID 认证。
-- 支持每天定时执行。
-- 支持手动运行一次。
-- 支持远程命令 `/newapi_checkin`。
-
-配置页不需要填写 JSON，也不需要按行填写站点。默认显示 1 个站点，点击 `新增站点` 可以继续添加。
-
-常用参数：
-
-- `站点URL`：New API 站点首页地址，例如 `https://example.com`。
-- `New API用户ID`：通常在浏览器 Local Storage 的 `user.id` 中。
-- `Cookie`：可粘贴 `session=xxx` 或完整 Cookie 字符串。多站点不同 Cookie 时在各自站点卡片内填写。
-- `请求超时秒数` / `失败重试次数` / `重试间隔秒数` / `浏览器等待秒数`：用于控制临时性网络失败重试和 CloakBrowser 页面等待。
-- `签到方式`：标准站点用 `API签到`；访问页面后赠送额度的站点用 `访问页面触发`；Any Router 这类返回 `var arg1` JS 防护页的站点用 `CloakBrowser访问触发`，路径建议填 `/console`。
-- `Authorization Token`、`签到接口路径`、`用户信息路径`：可选，401/404 或接口不标准时按站点单独填写。
-
-排查失败时，插件详情页会显示失败请求的 URL、HTTP 状态、Content-Type 和截断响应正文；MoviePilot 日志中也会记录每个站点的请求过程。
 
 ## 小黑盒每日任务
 
@@ -143,37 +111,6 @@ RedisAutoRestart
 
 默认重启方式是 `退出进程`，需要你的 Docker、systemd 或其他守护方式能自动拉起 MoviePilot。
 
-## ETK刮削完成通知
-
-插件 ID：
-
-```text
-ETKScrapeWebhook
-```
-
-功能：
-
-- 按媒体根目录合并 `MetadataScrape` 请求，并等待同一媒体本批整理任务全部结束。
-- 1.0.8 会检查 MoviePilot 整理队列；同根刮削串行，刮削期间新到的文件合并后再通知 ETK。
-- 由插件接管并执行 MoviePilot 基础刮削，避免逐集请求重复刮削。
-- 验证目标 NFO 已生成后，再通知 ETK 执行后置增强。
-- MoviePilot 基础刮削失败或 NFO 输出不完整时不会通知 ETK。
-- 将 MoviePilot 整理阶段选定的 `episode_group` 原样传给 ETK；空值表示使用 TMDb 官方季。
-- 合并同一媒体根目录的重复事件时优先保留精确 `file_list`，避免新增单季被扩大为整剧刮削。
-- 将插件刮削日志归档到 `plugins/etkscrapewebhook.log`。
-- 插件不提供详情页，通过插件卡片右下角菜单的原生“查看日志”打开完整日志界面。
-- 不再把插件刮削明细复制到主 `moviepilot.log`。
-- 日志按 5 MB 轮转，保留当前日志和 10 个备份。
-
-配置项：
-
-- `ETK Webhook地址`：例如 `http://emby-toolkit:5257/webhook/moviepilot`。
-- `ETK Webhook共享密钥`：与 ETK 中配置的 Emby Webhook 共享密钥一致。
-- `合并等待(秒)`：建议保持默认 10 秒；这是合并事件及检查整理状态的间隔，不代表等待 10 秒后整批就已完成。
-- `请求超时(秒)` / `失败重试`：控制通知 ETK 时的请求超时和重试次数。
-
-使用本插件时，应避免同时启用多个自动刮削入口和 ETK 实时文件监控，否则可能在 MoviePilot 基础刮削完成前提前触发 ETK。
-
 ## 兼容结构
 
 当前仓库同时保留三套结构：
@@ -187,22 +124,23 @@ package.v3.json
 plugins.v3/
 ```
 
-V2继续读取原有索引和目录，V3使用`package.v3.json` / `plugins.v3/`。所有五个插件均有原生V3版本，旧目录明确标记不供V3回退加载。
+V2 读取原有索引和目录；V3 使用 `package.v3.json` / `plugins.v3/`。三个保留插件均有独立 V3 实现，旧索引限定为 `>=2.12.0,<3` 并关闭 V3 回退。
 
-## MoviePilot V3适配
+## MoviePilot V3 适配
 
-| 插件 | V3版本 | 适配内容 |
+| 插件 | V3 版本 | 适配内容 |
 | --- | --- | --- |
-| 中国特摄联盟自动登录 | 1.0.2 | 稳定SDK、配置持久化、事件命令与定时任务 |
-| New API每日签到 | 1.0.12 | 稳定SDK及CloakBrowser启动接口，确保浏览器资源释放 |
-| Redis异常自动重启 | 1.0.1 | 稳定SDK及V3缓存后端配置，跳过未启用的Redis |
-| 小黑盒每日任务 | 1.0.1 | 稳定SDK、账号配置、事件命令与定时任务 |
-| ETK刮削完成通知 | 1.0.9 | 包含1.0.8整批等待修复，适配刮削入口、来源身份和日志写入器 |
+| 中国特摄联盟自动登录 | 2.0.0 | 稳定 SDK、明确 API 模型、宿主时区、一次性任务取消和登录连接释放 |
+| Redis异常自动重启 | 2.0.0 | V3 缓存配置、手动 URL 优先、重启任务取消、真实重启状态和连接释放 |
+| 小黑盒每日任务 | 2.0.0 | 稳定 SDK、账号结果模型、宿主时区、一次性任务取消和账号连接释放 |
 
-V3仍使用同一个仓库地址，刷新市场后安装对应插件即可。账号和配置键沿用原有名称。
-ETK增强以TMDb影视为目标；音乐及无TMDb身份的其他来源继续使用MoviePilot原生刮削。
+V3 使用同一个仓库地址，刷新市场后安装或更新对应插件。账号、配置键和插件 API 的 JSON 字段沿用原有名称。
 
-测试方法及官方运行时验证基准见[测试说明](tests/README.md)。
+Cron 使用 MoviePilot 配置的时区。支持一次性任务接口的 V3 宿主会在保存配置约 3 秒后执行“仅运行一次”；早期 V3 宿主直接执行。开关在执行前持久化复位，停用或重载会取消待执行任务。
+
+未手工填写 Redis URL 时，仅在 `CACHE_BACKEND_TYPE=redis` 时读取 `CACHE_BACKEND_URL`。使用 cachetools 时不自动连接默认 Redis 地址。“只通知不重启”及缺少自定义命令时不会记录为已触发重启。
+
+验证使用 MoviePilot V3.1.8 源码、Python 3.14 和宿主锁定依赖，覆盖真实 SDK、临时 SQLite、动态 API 注册、事件重载及资源清理。第三方站点签到和真实进程退出使用替身，未使用账号进行线上签到。运行方法见[测试说明](tests/README.md)。
 
 ## 免责声明
 

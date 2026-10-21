@@ -12,10 +12,20 @@ from urllib.parse import unquote, urlencode
 
 import requests
 from apscheduler.triggers.cron import CronTrigger
+from pydantic import BaseModel, Field
 
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
-from app.sdk.plugin import _PluginBase
+from app.sdk import scheduler as scheduler_sdk
+from app.sdk.config import settings
+
+try:
+    from app.sdk.plugin import _PluginBase
+except ModuleNotFoundError as err:
+    # Early V3 releases expose the same public contract through app.plugins.
+    if err.name != "app.sdk.plugin":
+        raise
+    from app.plugins import _PluginBase
 from app.schemas.types import EventType
 
 
@@ -318,11 +328,31 @@ class HeyboxClient:
         )
 
 
+class AccountResult(BaseModel):
+    """Describe the daily task result for one account."""
+
+    success: bool
+    name: str
+    heybox_id: str
+    message: str
+    detail: str
+
+
+class SigninResult(BaseModel):
+    """Describe the complete daily task result without changing its JSON keys."""
+
+    success: bool
+    title: str
+    message: str
+    time: str
+    items: List[AccountResult] = Field(default_factory=list)
+
+
 class HeyboxSignin(_PluginBase):
     plugin_name = "小黑盒每日任务"
     plugin_desc = "根据小黑盒 App 接口执行每日签到和支持的每日任务。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.1"
+    plugin_version = "2.0.0"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "heyboxsignin_"
@@ -332,6 +362,7 @@ class HeyboxSignin(_PluginBase):
     MAX_ACCOUNT_COUNT = 20
 
     _enabled = False
+    _stopped = False
     _onlyonce = False
     _notify = True
     _cron = "10 9 * * *"
@@ -344,11 +375,13 @@ class HeyboxSignin(_PluginBase):
     _last_result: Dict[str, Any] = {}
 
     def init_plugin(self, config: dict = None):
-        config = config or {}
+        self.stop_service()
+        self._stopped = False
+        config = dict(config or {})
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
         self._notify = bool(config.get("notify", True))
-        self._cron = config.get("cron") or self._cron
+        self._cron = config.get("cron") or "10 9 * * *"
         self._timeout = max(5, self.__to_int(config.get("timeout"), 20))
         self._retry_count = max(0, self.__to_int(config.get("retry_count"), 1))
         self._retry_interval = max(0, self.__to_int(config.get("retry_interval"), 3))
@@ -366,9 +399,10 @@ class HeyboxSignin(_PluginBase):
             self._last_result = {}
 
         if self._onlyonce:
-            self.signin(manual=True)
+            # Persist the reset before execution, including failures and restarts.
             self._onlyonce = False
             self.__save_config()
+            self._schedule_run_once()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -387,7 +421,7 @@ class HeyboxSignin(_PluginBase):
         if not self.get_state():
             return []
         try:
-            trigger = CronTrigger.from_crontab(self._cron)
+            trigger = CronTrigger.from_crontab(self._cron, timezone=settings.TZ)
         except Exception as err:
             logger.error(f"{self.plugin_name} Cron 表达式无效：{err}")
             return []
@@ -403,6 +437,7 @@ class HeyboxSignin(_PluginBase):
         return [{
             "path": "/signin",
             "endpoint": self.api_signin,
+            "response_model": SigninResult,
             "methods": ["POST"],
             "auth": "bear",
             "summary": "立即执行小黑盒每日任务",
@@ -525,13 +560,42 @@ class HeyboxSignin(_PluginBase):
         ]
 
     def stop_service(self):
-        pass
+        """Cancel pending work when the host disables or reloads this instance."""
+        self._stopped = True
+        self._enabled = False
+        remove = getattr(scheduler_sdk, "remove_plugin_once_job", None)
+        if remove:
+            try:
+                remove(self.__class__.__name__, "run_once")
+            except RuntimeError:
+                # The scheduler is absent during early host startup.
+                pass
 
-    def api_signin(self) -> Dict[str, Any]:
-        return self.signin(manual=True)
+    def _schedule_run_once(self) -> None:
+        """Queue one execution on modern V3 hosts and support early V3 releases."""
+        add = getattr(scheduler_sdk, "add_plugin_once_job", None)
+        if add:
+            try:
+                if add(self.__class__.__name__, "run_once", self._run_once,
+                       f"{self.plugin_name}：仅运行一次", delay_seconds=3):
+                    return
+            except RuntimeError:
+                pass
+        self._run_once()
+
+    def _run_once(self) -> None:
+        """Discard a callback delivered after this instance was stopped."""
+        if not self._stopped:
+            self.signin(manual=True)
+
+    def api_signin(self) -> SigninResult:
+        """Validate the existing API payload against its documented schema."""
+        return SigninResult.model_validate(self.signin(manual=True))
 
     @eventmanager.register(EventType.PluginAction)
     def remote_signin(self, event: Event):
+        if self._stopped:
+            return
         event_data = event.event_data or {}
         if event_data.get("action") == "heybox_signin":
             self.signin(manual=True)
@@ -547,6 +611,7 @@ class HeyboxSignin(_PluginBase):
         logger.info(f"{self.plugin_name} 开始执行，账号数：{len(accounts)}")
         items = []
         for index, account_config in enumerate(accounts, start=1):
+            client = None
             name = account_config.get("name") or f"小黑盒账号 {index}"
             try:
                 account = HeyboxAccount(name, account_config.get("cookie") or "")
@@ -556,6 +621,9 @@ class HeyboxSignin(_PluginBase):
             except Exception as err:
                 logger.exception(f"{self.plugin_name} [{name}] 执行失败：{err}")
                 items.append(self.__item(False, name, "", f"执行失败：{err}", ""))
+            finally:
+                if client is not None:
+                    client.session.close()
 
         success_count = sum(1 for item in items if item.get("success"))
         success = success_count == len(items)

@@ -8,23 +8,40 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from apscheduler.triggers.cron import CronTrigger
+from pydantic import BaseModel
 
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
-from app.sdk.plugin import _PluginBase
-from app.schemas.types import EventType
+from app.sdk import scheduler as scheduler_sdk
+from app.sdk.config import settings
 
 try:
-    from app.sdk.config import settings
-except Exception:
-    settings = None
+    from app.sdk.plugin import _PluginBase
+except ModuleNotFoundError as err:
+    # Early V3 releases expose the same public contract through app.plugins.
+    if err.name != "app.sdk.plugin":
+        raise
+    from app.plugins import _PluginBase
+from app.schemas.types import EventType
+
+
+class RedisCheckResult(BaseModel):
+    """Describe the Redis check and whether a restart was actually requested."""
+
+    success: bool
+    title: str
+    message: str
+    detail: str
+    restart_triggered: bool
+    failure_count: int
+    time: str
 
 
 class RedisAutoRestart(_PluginBase):
     plugin_name = "Redis异常自动重启"
     plugin_desc = "检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.1"
+    plugin_version = "2.0.0"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "redisautorestart_"
@@ -32,6 +49,7 @@ class RedisAutoRestart(_PluginBase):
     auth_level = 1
 
     _enabled = False
+    _stopped = False
     _onlyonce = False
     _notify = True
     _cron = "*/5 * * * *"
@@ -51,18 +69,20 @@ class RedisAutoRestart(_PluginBase):
     _last_result: Dict[str, Any] = {}
 
     def init_plugin(self, config: dict = None):
-        config = config or {}
+        self.stop_service()
+        self._stopped = False
+        config = dict(config or {})
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
         self._notify = bool(config.get("notify", True))
-        self._cron = config.get("cron") or self._cron
-        self._timeout = self.__to_int(config.get("timeout"), 5)
+        self._cron = config.get("cron") or "*/5 * * * *"
+        self._timeout = max(1, self.__to_int(config.get("timeout"), 5))
         self._direct_check = bool(config.get("direct_check", True))
         self._redis_url = self.__clean(config.get("redis_url"))
         self._log_scan = bool(config.get("log_scan"))
         self._log_path = self.__clean(config.get("log_path"))
         self._log_tail_kb = max(16, self.__to_int(config.get("log_tail_kb"), 512))
-        self._log_keywords = config.get("log_keywords") or self._log_keywords
+        self._log_keywords = config.get("log_keywords") or "Redis连接失败\nRedis缓存，异常信息：Redis连接失败"
         self._failure_threshold = max(1, self.__to_int(config.get("failure_threshold"), 2))
         self._cooldown_minutes = max(0, self.__to_int(config.get("cooldown_minutes"), 30))
         self._restart_mode = self.__restart_mode(config.get("restart_mode"))
@@ -76,9 +96,10 @@ class RedisAutoRestart(_PluginBase):
             self._last_result = {}
 
         if self._onlyonce:
-            self.check(manual=True)
+            # Persist the reset before execution, including failures and restarts.
             self._onlyonce = False
             self.__save_config()
+            self._schedule_run_once()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -99,7 +120,7 @@ class RedisAutoRestart(_PluginBase):
         if not self.get_state():
             return []
         try:
-            trigger = CronTrigger.from_crontab(self._cron)
+            trigger = CronTrigger.from_crontab(self._cron, timezone=settings.TZ)
         except Exception as err:
             logger.error(f"{self.plugin_name} Cron 表达式无效：{err}")
             return []
@@ -118,6 +139,7 @@ class RedisAutoRestart(_PluginBase):
             {
                 "path": "/check",
                 "endpoint": self.api_check,
+                "response_model": RedisCheckResult,
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "立即检测 Redis 并按配置重启",
@@ -266,13 +288,54 @@ class RedisAutoRestart(_PluginBase):
         ]
 
     def stop_service(self):
-        pass
+        """Cancel pending work when the host disables or reloads this instance."""
+        self._stopped = True
+        self._enabled = False
+        remove = getattr(scheduler_sdk, "remove_plugin_once_job", None)
+        if remove:
+            try:
+                remove(self.__class__.__name__, "run_once")
+            except RuntimeError:
+                # The scheduler is absent during early host startup.
+                pass
+        if remove:
+            try:
+                remove(self.__class__.__name__, "restart_exit")
+            except RuntimeError:
+                pass
+        cancel = getattr(self, "_restart_cancel", None)
+        if cancel:
+            cancel.set()
+        thread = getattr(self, "_restart_thread", None)
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=1)
+        self._restart_thread = None
 
-    def api_check(self) -> Dict[str, Any]:
-        return self.check(manual=True)
+    def _schedule_run_once(self) -> None:
+        """Queue one execution on modern V3 hosts and support early V3 releases."""
+        add = getattr(scheduler_sdk, "add_plugin_once_job", None)
+        if add:
+            try:
+                if add(self.__class__.__name__, "run_once", self._run_once,
+                       f"{self.plugin_name}：仅运行一次", delay_seconds=3):
+                    return
+            except RuntimeError:
+                pass
+        self._run_once()
+
+    def _run_once(self) -> None:
+        """Discard a callback delivered after this instance was stopped."""
+        if not self._stopped:
+            self.check(manual=True)
+
+    def api_check(self) -> RedisCheckResult:
+        """Validate the existing API payload against its documented schema."""
+        return RedisCheckResult.model_validate(self.check(manual=True))
 
     @eventmanager.register(EventType.PluginAction)
     def remote_check(self, event: Event):
+        if self._stopped:
+            return
         event_data = event.event_data or {}
         if event_data.get("action") == "redis_auto_restart_check":
             self.check(manual=True)
@@ -310,12 +373,14 @@ class RedisAutoRestart(_PluginBase):
         if not allowed:
             return self.__finish(False, "Redis异常", f"{message}，{cooldown_message}", detail, False, failure_count)
 
-        restart_message = self.__trigger_restart(detail)
-        self.__save_runtime_state({
-            "failure_count": failure_count,
-            "last_restart_at": time.time(),
-        })
-        return self.__finish(False, "Redis异常，已触发重启", f"{message}，{restart_message}", detail, True, failure_count)
+        restart_triggered, restart_message = self.__trigger_restart(detail)
+        if restart_triggered:
+            self.__save_runtime_state({
+                "failure_count": failure_count,
+                "last_restart_at": time.time(),
+            })
+        title = "Redis异常，已触发重启" if restart_triggered else "Redis异常"
+        return self.__finish(False, title, f"{message}，{restart_message}", detail, restart_triggered, failure_count)
 
     def __check_redis(self) -> Dict[str, Any]:
         try:
@@ -327,6 +392,7 @@ class RedisAutoRestart(_PluginBase):
         if not redis_url:
             return {"failed": False, "inconclusive": True, "message": "Redis PING：未配置 Redis URL，且未能从 MoviePilot 配置读取"}
 
+        client = None
         try:
             client = redis.Redis.from_url(redis_url, socket_timeout=self._timeout, socket_connect_timeout=self._timeout)
             pong = client.ping()
@@ -334,6 +400,9 @@ class RedisAutoRestart(_PluginBase):
         except Exception as err:
             logger.warning(f"{self.plugin_name} Redis PING 失败：{err}")
             return {"failed": True, "message": f"Redis PING：失败，{err}"}
+        finally:
+            if client is not None:
+                client.close()
 
     def __scan_log(self) -> Dict[str, Any]:
         if not self._log_path:
@@ -358,7 +427,9 @@ class RedisAutoRestart(_PluginBase):
             return {"failed": True, "message": f"日志扫描：命中 Redis 异常关键字：{', '.join(matched)}"}
         return {"failed": False, "message": "日志扫描：未命中 Redis 异常关键字"}
 
-    def __trigger_restart(self, detail: str) -> str:
+    def __trigger_restart(self, detail: str) -> Tuple[bool, str]:
+        if self._stopped:
+            return False, "插件已停止，未执行重启"
         if self._notify:
             try:
                 self.post_message(title=f"{self.plugin_name}：触发重启", text=detail)
@@ -366,25 +437,51 @@ class RedisAutoRestart(_PluginBase):
                 logger.warning(f"{self.plugin_name} 发送重启通知失败：{err}")
 
         if self._restart_mode == "notify":
-            return "当前配置为只通知不重启"
+            return False, "当前配置为只通知不重启"
 
         if self._restart_mode == "command":
             if not self._restart_command:
-                return "未配置自定义重启命令，未执行重启"
-            subprocess.Popen(self._restart_command, shell=True)
-            return f"已执行自定义重启命令：{self._restart_command}"
+                return False, "未配置自定义重启命令，未执行重启"
+            try:
+                subprocess.Popen(self._restart_command, shell=True)
+            except OSError as err:
+                return False, f"自定义重启命令启动失败：{err}"
+            return True, f"已执行自定义重启命令：{self._restart_command}"
 
         delay = self._restart_delay
-        exit_code = self._exit_code
+        add = getattr(scheduler_sdk, "add_plugin_once_job", None)
+        if add:
+            try:
+                if add(self.__class__.__name__, "restart_exit", self._exit_process,
+                       f"{self.plugin_name}：退出进程", delay_seconds=max(1, delay)):
+                    return True, f"将在 {max(1, delay)} 秒后退出 MoviePilot 进程，等待外部守护或 Docker 重启"
+            except RuntimeError:
+                pass
+
+        # Early V3 releases lack one-off jobs; the fallback thread is cancellable.
+        previous_cancel = getattr(self, "_restart_cancel", None)
+        if previous_cancel:
+            previous_cancel.set()
+        previous_thread = getattr(self, "_restart_thread", None)
+        if previous_thread and previous_thread is not threading.current_thread():
+            previous_thread.join(timeout=1)
+        cancel = threading.Event()
+        self._restart_cancel = cancel
 
         def delayed_exit():
-            if delay > 0:
-                time.sleep(delay)
-            logger.warning(f"{self.plugin_name} 正在退出 MoviePilot 进程，exit_code={exit_code}")
-            os._exit(exit_code)
+            if not cancel.wait(max(1, delay)):
+                self._exit_process()
 
-        threading.Thread(target=delayed_exit, daemon=True).start()
-        return f"将在 {delay} 秒后退出 MoviePilot 进程，等待外部守护或 Docker 重启"
+        self._restart_thread = threading.Thread(target=delayed_exit, daemon=True)
+        self._restart_thread.start()
+        return True, f"将在 {max(1, delay)} 秒后退出 MoviePilot 进程，等待外部守护或 Docker 重启"
+
+    def _exit_process(self) -> None:
+        """Exit only while the requesting plugin instance remains active."""
+        if self._stopped:
+            return
+        logger.warning(f"{self.plugin_name} 正在退出 MoviePilot 进程，exit_code={self._exit_code}")
+        os._exit(self._exit_code)
 
     def __restart_allowed(self, state: Dict[str, Any]) -> Tuple[bool, str]:
         if self._cooldown_minutes <= 0:

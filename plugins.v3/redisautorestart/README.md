@@ -37,6 +37,16 @@ redis://redis:6379/0
 
 如果使用 `退出进程`，必须确认部署环境会自动拉起 MoviePilot；否则进程退出后不会自行恢复。
 
-## V3适配
+## V3 适配
 
-1.0.1通过稳定SDK读取配置。未手工填写Redis URL时，仅在`CACHE_BACKEND_TYPE=redis`时使用`CACHE_BACKEND_URL`；使用默认cachetools缓存时跳过自动Redis检测，避免把未启用Redis误认为故障。手工指定Redis URL仍优先。
+版本 `2.0.0` 使用稳定 SDK，并兼容早期 V3 公开的插件基类入口。账号和配置键沿用原有名称。
+
+- Cron 使用 MoviePilot 的 `TZ` 时区。
+- “仅运行一次”在支持宿主一次性任务接口时延迟约 3 秒执行，早期 V3 直接执行；执行前持久化关闭开关。
+- 停用或重载取消未执行的一次性任务。
+- API 显式声明 Pydantic 响应模型，保留既有 JSON 字段。
+- 每次请求结束后释放本次 HTTP 或 Redis 连接。
+
+未手工填写 Redis URL 时，仅在 `CACHE_BACKEND_TYPE=redis` 时使用 `CACHE_BACKEND_URL`。使用默认 cachetools 缓存时不自动连接 Redis。手工指定 Redis URL 仍优先。
+
+“只通知不重启”、缺少自定义命令或命令启动失败，不记录为已触发重启，也不开始重启冷却期。延迟退出任务在插件停用或重载时取消；早期 V3 的备用线程同样可以取消。

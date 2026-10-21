@@ -7,18 +7,39 @@ from urllib.parse import urljoin
 
 import requests
 from apscheduler.triggers.cron import CronTrigger
+from pydantic import BaseModel
 
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
-from app.sdk.plugin import _PluginBase
+from app.sdk import scheduler as scheduler_sdk
+from app.sdk.config import settings
+
+try:
+    from app.sdk.plugin import _PluginBase
+except ModuleNotFoundError as err:
+    # Early V3 releases expose the same public contract through app.plugins.
+    if err.name != "app.sdk.plugin":
+        raise
+    from app.plugins import _PluginBase
 from app.schemas.types import EventType
+
+
+class SigninResult(BaseModel):
+    """Return the existing login result with an explicit API schema."""
+
+    success: bool
+    title: str
+    message: str
+    time: str
+    site_url: str
+    username: str
 
 
 class TemoxSignin(_PluginBase):
     plugin_name = "中国特摄联盟自动登录"
     plugin_desc = "每天自动登录中国特摄联盟，并处理站点算术验证。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.2"
+    plugin_version = "2.0.0"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "temoxsignin_"
@@ -26,6 +47,7 @@ class TemoxSignin(_PluginBase):
     auth_level = 1
 
     _enabled = False
+    _stopped = False
     _onlyonce = False
     _notify = True
     _site_url = "http://bt.temox.com:8080"
@@ -39,15 +61,17 @@ class TemoxSignin(_PluginBase):
     DAILY_REWARD_MESSAGE = "每天登录 经验+1p 人气+1点 分享度+1 人品+1p"
 
     def init_plugin(self, config: dict = None):
-        config = config or {}
+        self.stop_service()
+        self._stopped = False
+        config = dict(config or {})
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
         self._notify = bool(config.get("notify", True))
-        self._site_url = (config.get("site_url") or self._site_url).rstrip("/")
+        self._site_url = (config.get("site_url") or "http://bt.temox.com:8080").rstrip("/")
         self._username = config.get("username") or ""
         self._password = config.get("password") or ""
-        self._cron = config.get("cron") or self._cron
-        self._timeout = self._to_int(config.get("timeout"), 20)
+        self._cron = config.get("cron") or "15 8 * * *"
+        self._timeout = max(1, self._to_int(config.get("timeout"), 20))
         self._questionid = str(config.get("questionid") or "0")
         self._security_answer = config.get("security_answer") or ""
 
@@ -57,9 +81,10 @@ class TemoxSignin(_PluginBase):
             self._last_result = {}
 
         if self._onlyonce:
-            self.signin(manual=True)
+            # Persist the reset before execution, including failures and restarts.
             self._onlyonce = False
             self.__save_config()
+            self._schedule_run_once()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -81,7 +106,7 @@ class TemoxSignin(_PluginBase):
             return []
 
         try:
-            trigger = CronTrigger.from_crontab(self._cron)
+            trigger = CronTrigger.from_crontab(self._cron, timezone=settings.TZ)
         except Exception as err:
             logger.error(f"{self.plugin_name} Cron 表达式无效：{err}")
             return []
@@ -101,6 +126,7 @@ class TemoxSignin(_PluginBase):
             {
                 "path": "/signin",
                 "endpoint": self.api_signin,
+                "response_model": SigninResult,
                 "methods": ["POST"],
                 "auth": "bear",
                 "summary": "立即登录中国特摄联盟",
@@ -325,13 +351,42 @@ class TemoxSignin(_PluginBase):
         ]
 
     def stop_service(self):
-        pass
+        """Cancel pending work when the host disables or reloads this instance."""
+        self._stopped = True
+        self._enabled = False
+        remove = getattr(scheduler_sdk, "remove_plugin_once_job", None)
+        if remove:
+            try:
+                remove(self.__class__.__name__, "run_once")
+            except RuntimeError:
+                # The scheduler is absent during early host startup.
+                pass
 
-    def api_signin(self) -> Dict[str, Any]:
-        return self.signin(manual=True)
+    def _schedule_run_once(self) -> None:
+        """Queue one execution on modern V3 hosts and support early V3 releases."""
+        add = getattr(scheduler_sdk, "add_plugin_once_job", None)
+        if add:
+            try:
+                if add(self.__class__.__name__, "run_once", self._run_once,
+                       f"{self.plugin_name}：仅运行一次", delay_seconds=3):
+                    return
+            except RuntimeError:
+                pass
+        self._run_once()
+
+    def _run_once(self) -> None:
+        """Discard a callback delivered after this instance was stopped."""
+        if not self._stopped:
+            self.signin(manual=True)
+
+    def api_signin(self) -> SigninResult:
+        """Validate the existing API payload against its documented schema."""
+        return SigninResult.model_validate(self.signin(manual=True))
 
     @eventmanager.register(EventType.PluginAction)
     def remote_signin(self, event: Event):
+        if self._stopped:
+            return
         event_data = event.event_data or {}
         if event_data.get("action") != "temox_signin":
             return
@@ -411,6 +466,8 @@ class TemoxSignin(_PluginBase):
         except Exception as err:
             logger.exception(f"{self.plugin_name} 执行异常：{err}")
             return self.__finish(False, "执行异常", str(err))
+        finally:
+            session.close()
 
     def __get_with_gate(self, session: requests.Session, url: str) -> requests.Response:
         response = session.get(url, timeout=self._timeout)
