@@ -3,12 +3,13 @@
     "name": "中国特摄联盟自动登录",
     "description": "每天自动登录中国特摄联盟，并处理站点算术验证。",
     "labels": "站点签到,自动登录,Discuz",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
+      "v1.0.2": "登录通知以站点实际为准：读取欢迎提示及每日奖励Cookie，移除固定奖励并修复提示末尾JavaScript残留。",
       "v1.0.1": "登录成功通知增加每日登录奖励提示。",
       "v1.0.0": "首次发布，支持中国特摄联盟账号密码登录和算术验证。"
     },

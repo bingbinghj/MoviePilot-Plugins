@@ -23,6 +23,8 @@ except ModuleNotFoundError as err:
     from app.plugins import _PluginBase
 from app.schemas.types import EventType
 
+from .messages import credit_prompt, login_prompt
+
 
 class SigninResult(BaseModel):
     """Return the existing login result with an explicit API schema."""
@@ -39,7 +41,7 @@ class TemoxSignin(_PluginBase):
     plugin_name = "中国特摄联盟自动登录"
     plugin_desc = "每天自动登录中国特摄联盟，并处理站点算术验证。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "2.0.0"
+    plugin_version = "2.0.1"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "temoxsignin_"
@@ -58,7 +60,6 @@ class TemoxSignin(_PluginBase):
     _questionid = "0"
     _security_answer = ""
     _last_result: Dict[str, Any] = {}
-    DAILY_REWARD_MESSAGE = "每天登录 经验+1p 人气+1点 分享度+1 人品+1p"
 
     def init_plugin(self, config: dict = None):
         self.stop_service()
@@ -418,7 +419,9 @@ class TemoxSignin(_PluginBase):
             form = self.__extract_login_form(text)
             if not form:
                 if self.__is_logged_in(text):
-                    message = self.__success_message("当前会话已处于登录状态", text)
+                    message = self.__success_message(
+                        self.__extract_success_message(text) or "当前会话已处于登录状态",
+                        reward=self.__credit_message(session, text))
                     return self.__finish(True, "登录成功", message)
                 return self.__finish(False, "登录失败", "未能在页面中找到 Discuz 登录表单")
 
@@ -444,6 +447,8 @@ class TemoxSignin(_PluginBase):
                 timeout=self._timeout,
             )
             login_text = self.__response_text(login_response)
+            # Read the popup before the next page can replace or clear its cookies.
+            reward = self.__credit_message(session, login_text)
 
             check_url = urljoin(f"{self._site_url}/", "forum.php")
             check_response = self.__get_with_gate(session, check_url)
@@ -452,8 +457,7 @@ class TemoxSignin(_PluginBase):
             if self.__is_logged_in(login_text) or self.__is_logged_in(check_text):
                 message = self.__success_message(
                     self.__extract_success_message(login_text) or "登录成功，已获取登录态",
-                    login_text,
-                    check_text,
+                    reward=reward or self.__credit_message(session, check_text),
                 )
                 return self.__finish(True, "登录成功", message)
 
@@ -583,16 +587,8 @@ class TemoxSignin(_PluginBase):
 
     @staticmethod
     def __extract_success_message(text: str) -> Optional[str]:
-        patterns = [
-            r"<p[^>]*class=[\"']?succeedmessage[\"']?[^>]*>(.*?)</p>",
-            r"id=[\"']succeedmessage[^>]*>(.*?)</",
-            r"欢迎您回来[^<\r\n]*",
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, text, re.I | re.S)
-            if match:
-                return TemoxSignin.__clean_text(match.group(1) if match.groups() else match.group(0))
-        return None
+        """Use the real welcome message without trailing JavaScript syntax."""
+        return login_prompt(text)
 
     @staticmethod
     def __extract_error_message(text: str) -> Optional[str]:
@@ -611,27 +607,16 @@ class TemoxSignin(_PluginBase):
         return None
 
     @classmethod
-    def __success_message(cls, message: str, *texts: str) -> str:
+    def __success_message(cls, message: str, reward: Optional[str] = None) -> str:
         base = cls.__clean_text(message or "") or "登录成功，已获取登录态"
-        reward = cls.__extract_daily_reward_message(*texts) or cls.DAILY_REWARD_MESSAGE
-        if cls.__has_daily_reward_message(base):
+        if not reward or reward in base:
             return base
         return f"{base}。{reward}"
 
-    @classmethod
-    def __extract_daily_reward_message(cls, *texts: str) -> Optional[str]:
-        pattern = r"每天登录\s*经验\s*\+\s*\d+\s*p\s*人气\s*\+\s*\d+\s*点\s*分享度\s*\+\s*\d+\s*人品\s*\+\s*\d+\s*p"
-        for text in texts:
-            cleaned = cls.__clean_text(text or "")
-            match = re.search(pattern, cleaned, re.I)
-            if match:
-                return re.sub(r"\s+", " ", match.group(0)).strip()
-        return None
-
-    @classmethod
-    def __has_daily_reward_message(cls, text: str) -> bool:
-        compact = re.sub(r"\s+", "", text or "")
-        return all(marker in compact for marker in ("每天登录", "经验+", "人气+", "分享度+", "人品+"))
+    @staticmethod
+    def __credit_message(session: requests.Session, text: str) -> Optional[str]:
+        """Read the same daily credit notification Cookie that Discuz renders."""
+        return credit_prompt(text, session.cookies.get_dict())
 
     @staticmethod
     def __clean_text(value: str) -> str:

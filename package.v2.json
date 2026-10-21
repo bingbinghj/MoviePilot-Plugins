@@ -3,12 +3,15 @@
     "name": "中国特摄联盟自动登录",
     "description": "每天自动登录中国特摄联盟，并处理站点算术验证。",
     "labels": "站点签到,自动登录,Discuz",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
     "system_version": ">=2.12.0,<3",
     "level": 1,
-    "v3": false
+    "v3": false,
+    "history": {
+      "v1.0.2": "登录通知以站点实际为准：读取欢迎提示及每日奖励Cookie，移除固定奖励并修复提示末尾JavaScript残留。"
+    }
   },
   "RedisAutoRestart": {
     "name": "Redis异常自动重启",

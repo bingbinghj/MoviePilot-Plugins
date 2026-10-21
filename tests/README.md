@@ -34,3 +34,14 @@ $env:HEYBOX_TEST_GENERATION = 'v3'
 ```
 
 将 `HEYBOX_TEST_GENERATION` 改为 `v2` 或 `v1`，以独立进程加载历史目录的实现。2026-10-21 已在 V3.1.8 运行环境验证 V3 实现，以及在 V3.0.0 兼容层环境验证 V2 实现，各 17 项通过。全部请求、发帖、评分和删除均使用替身。
+
+## 特摄联盟实际登录与奖励提示
+
+`tests/temox/test_messages.py` 使用脱敏后的登录响应结构和模拟 Cookie，覆盖脚本中的欢迎提示、转义与嵌套 HTML、实际奖励名称/单位/数值、Cookie 用户与站点校验、无奖励时不生成提示，以及首次奖励 Cookie 在后续页面清除前捕获、再次登录不复用旧奖励。
+
+```powershell
+$env:TEMOX_TEST_GENERATION = 'v3'
+& 'C:\path\to\MoviePilot\.venv\Scripts\python.exe' -m unittest discover -s tests/temox -p test_messages.py -v
+```
+
+改为 `TEMOX_TEST_GENERATION=v2` 可在独立进程验证历史实现。2026-10-22 两组各 12 项通过，V3.1.8 的 14 项宿主合同测试及 V3.0.0 的最低版本检查也通过。实际登录确认欢迎提示可正确读取；当日重复登录没有返回奖励 Cookie，因此每日首登的真实奖励仍待下一次服务器发放时验证。账号密码、登录态 Cookie 和完整页面未写入仓库。
