@@ -49,9 +49,8 @@ class HostContracts(unittest.TestCase):
                     if generation == "v3":
                         self.assertTrue(issubclass(CLASSES[name], _PluginBase))
                         self.assertEqual(entry["version"], CLASSES[name].plugin_version)
-                        self.assertEqual(entry["version"], "2.0.0")
                         self.assertEqual(entry["system_version"], ">=3.0.0")
-                        self.assertEqual(next(iter(entry["history"])), "v2.0.0")
+                        self.assertEqual(next(iter(entry["history"])), f"v{entry['version']}")
 
     def test_persistence_forms_and_stop(self):
         for name in NAMES:

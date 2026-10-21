@@ -31,12 +31,13 @@
     "name": "小黑盒每日任务",
     "description": "根据小黑盒 App 接口执行每日签到和支持的每日任务。",
     "labels": "签到,小黑盒,每日任务",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
     "system_version": ">=3.0.0",
     "level": 1,
     "history": {
+      "v2.1.0": "同步上游15f7fb8：修复奖励标签及maxjia解析，新增可选限时发帖和游戏评价、本地Web签名及帖子清理回查。",
       "v2.0.0": "完善V3 SDK兼容、API模型、宿主时区及一次性任务生命周期，释放网络连接；保留原配置和API字段。",
       "v1.0.1": "历史V3适配版本。"
     }

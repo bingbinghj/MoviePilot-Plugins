@@ -21,3 +21,16 @@ $env:PYTHONDONTWRITEBYTECODE = '1'
 测试包括三个插件的宿主加载、三套市场索引及移除目录检查、配置和数据跨实例持久化、Cron 时区、重复初始化、命令过滤、停止后的事件丢弃、一次性任务复位及取消、API 真实注册与 HTTP 响应、OpenAPI 模型、重载去重、Redis 配置优先级、HTTP/Redis 连接释放及退出线程取消。
 
 已有完整V3开发环境时，也可设置`MOVIEPILOT_BACKEND`为后端源码路径，在该Python环境执行同一unittest命令。V2与V3测试必须使用独立进程，避免同名插件及SDK测试替身相互影响。
+
+## 小黑盒上游同步测试
+
+`tests/heybox/test_upstream.py` 覆盖 Web 签名与上游 Node.js 固定输入的一致性、奖励标签、`maxjia`、新增开关的默认值和持久化、发帖与评价参数、结算成功/超时、回查异常及删除失败、创建请求禁止自动重试和 Web Cookie。
+
+在上述 V3 开发环境运行：
+
+```powershell
+$env:HEYBOX_TEST_GENERATION = 'v3'
+& 'C:\path\to\MoviePilot\.venv\Scripts\python.exe' -m unittest discover -s tests/heybox -p test_upstream.py -v
+```
+
+将 `HEYBOX_TEST_GENERATION` 改为 `v2` 或 `v1`，以独立进程加载历史目录的实现。2026-10-21 已在 V3.1.8 运行环境验证 V3 实现，以及在 V3.0.0 兼容层环境验证 V2 实现，各 17 项通过。全部请求、发帖、评分和删除均使用替身。

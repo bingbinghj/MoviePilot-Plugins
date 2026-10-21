@@ -14,9 +14,12 @@ import requests
 from apscheduler.triggers.cron import CronTrigger
 
 from app.core.event import Event, eventmanager
+from app.core.config import settings
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
+
+from .signature import make_web_signature
 
 
 API_BASE = "https://api.xiaoheihe.cn"
@@ -46,6 +49,16 @@ PATH_GAME_RECOMMEND = "/game/all_recommend/v2"
 PATH_GAME_COMMENTS = "/bbs/app/link/game/comments"
 PATH_VIEW_TIME = "/bbs/app/link/view/time"
 PATH_DATA_REPORT = "/account/data_report/"
+PATH_BBS_POST = "/bbs/app/api/link/post"
+PATH_BBS_DELETE = "/bbs/app/link/delete"
+UPSTREAM_REVISION = "15f7fb8bffd2f6d58b1e38755002939fc919b055"
+DEFAULT_POST_TITLE = "前面忘了中间忘了后面也忘了"
+DEFAULT_POST_CONTENT = "孩子很爱用，很好吃，会复购"
+DEFAULT_REVIEW_CONTENT = "好玩推荐游戏体验非常好"
+WEB_PROFILE = {"app": "heybox", "os_type": "web", "x_app": "heybox",
+               "x_client_type": "web", "x_os_type": "Android", "x_client_version": "1.3.389"}
+WEB_UA = ("Mozilla/5.0 (Linux; Android 16; 23113RKC6C Build/BP2A.250605.031.A3; wv) "
+          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.192 Mobile Safari/537.36")
 
 WAITING_STATE = "waiting"
 FINISH_STATE = "finish"
@@ -126,6 +139,32 @@ def build_app_cookie(cookie: str) -> str:
     return f"pkey={pkey};x_xhh_tokenid={token_id}"
 
 
+def parse_maxjia(value: Any) -> Optional[dict]:
+    """Decode both raw and URL-encoded heybox task links."""
+    raw = to_text(value)
+    if raw.startswith("heybox://"):
+        raw = raw[len("heybox://"):]
+    try:
+        result = json.loads(unquote(raw))
+        return result if isinstance(result, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def build_web_cookie(cookie: str, heybox_id: str) -> str:
+    """Preserve account cookies and add the upstream Web aliases when absent."""
+    build_app_cookie(cookie)
+    values = {}
+    for raw in cookie.split(";"):
+        if "=" in raw:
+            key, value = raw.split("=", 1)
+            if key.strip():
+                values[key.strip()] = value.strip()
+    values.setdefault("x_pkey", values["pkey"])
+    values.setdefault("x_heybox_id", heybox_id)
+    return ";".join(f"{key}={value}" for key, value in values.items() if value)
+
+
 def response_preview(response: requests.Response, limit: int = 500) -> str:
     try:
         text = response.text or ""
@@ -145,6 +184,7 @@ class HeyboxAccount:
         self.imei = make_imei(self.raw_cookie)
         self.device_info = APP_PROFILE["device_info"]
         self.app_cookie = build_app_cookie(self.raw_cookie)
+        self.web_cookie = build_web_cookie(self.raw_cookie, self.heybox_id)
 
 
 class HeyboxClient:
@@ -175,9 +215,10 @@ class HeyboxClient:
         headers: Optional[Dict[str, str]] = None,
         data: Optional[str] = None,
         json_body: Optional[Dict[str, Any]] = None,
+        retries: Optional[int] = None,
     ) -> Dict[str, Any]:
         method = method.upper()
-        attempts = max(1, self.retry_count + 1)
+        attempts = max(1, (self.retry_count if retries is None else retries) + 1)
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
@@ -317,12 +358,33 @@ class HeyboxClient:
             data=body,
         )
 
+    def post_json(self, path: str, body: dict) -> Dict[str, Any]:
+        """Submit App form writes once; an uncertain response must not duplicate a post."""
+        hkey = self.request_hkey(path)
+        query = build_query_string(self.build_signed_query(path, hkey))
+        return self.request_json("POST", f"{API_BASE}{path}?{query}",
+                                 headers=self.app_headers({"Content-Type": "application/x-www-form-urlencoded"}),
+                                 data=build_query_string(body), retries=0)
+
+
+class HeyboxWebClient(HeyboxClient):
+    """Use upstream local Web signatures for game reviews and the account's own Cookie."""
+
+    def post_json(self, path: str, body: dict) -> Dict[str, Any]:
+        query = {**WEB_PROFILE, "heybox_id": self.account.heybox_id, **make_web_signature(path)}
+        headers = {"User-Agent": WEB_UA, "Accept": "application/json, text/plain, */*",
+                   "Origin": "https://web.xiaoheihe.cn", "Referer": "https://web.xiaoheihe.cn/",
+                   "X-Requested-With": "com.max.xiaoheihe", "Cookie": self.account.web_cookie,
+                   "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}
+        return self.request_json("POST", f"{API_BASE}{path}?{build_query_string(query)}",
+                                 headers=headers, data=build_query_string(body), retries=0)
+
 
 class HeyboxSignin(_PluginBase):
     plugin_name = "小黑盒每日任务"
     plugin_desc = "根据小黑盒 App 接口执行每日签到和支持的每日任务。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "heyboxsignin_"
@@ -332,6 +394,7 @@ class HeyboxSignin(_PluginBase):
     MAX_ACCOUNT_COUNT = 20
 
     _enabled = False
+    _stopped = False
     _onlyonce = False
     _notify = True
     _cron = "10 9 * * *"
@@ -339,20 +402,34 @@ class HeyboxSignin(_PluginBase):
     _retry_count = 1
     _retry_interval = 3
     _share_tasks = True
+    _time_limit_tasks = False
+    _game_review_tasks = False
+    _post_title = DEFAULT_POST_TITLE
+    _post_content = DEFAULT_POST_CONTENT
+    _review_content = DEFAULT_REVIEW_CONTENT
+    _review_score = 5
     _account_count = 1
     _account_configs: List[Dict[str, Any]] = []
     _last_result: Dict[str, Any] = {}
 
     def init_plugin(self, config: dict = None):
-        config = config or {}
+        self.stop_service()
+        self._stopped = False
+        config = dict(config or {})
         self._enabled = bool(config.get("enabled"))
         self._onlyonce = bool(config.get("onlyonce"))
         self._notify = bool(config.get("notify", True))
-        self._cron = config.get("cron") or self._cron
+        self._cron = config.get("cron") or "10 9 * * *"
         self._timeout = max(5, self.__to_int(config.get("timeout"), 20))
         self._retry_count = max(0, self.__to_int(config.get("retry_count"), 1))
         self._retry_interval = max(0, self.__to_int(config.get("retry_interval"), 3))
         self._share_tasks = bool(config.get("share_tasks", True))
+        self._time_limit_tasks = bool(config.get("time_limit_tasks", False))
+        self._game_review_tasks = bool(config.get("game_review_tasks", False))
+        self._post_title = self.__clean(config.get("post_title", DEFAULT_POST_TITLE))
+        self._post_content = self.__clean(config.get("post_content", DEFAULT_POST_CONTENT))
+        self._review_content = self.__clean(config.get("review_content", DEFAULT_REVIEW_CONTENT))
+        self._review_score = max(1, min(5, self.__to_int(config.get("review_score"), 5)))
         self._account_configs = self.__load_account_configs(config)
         default_account_count = max([
             index for index, account in enumerate(self._account_configs, start=1)
@@ -366,9 +443,10 @@ class HeyboxSignin(_PluginBase):
             self._last_result = {}
 
         if self._onlyonce:
-            self.signin(manual=True)
+            # Persist the reset before execution, including failures and restarts.
             self._onlyonce = False
             self.__save_config()
+            self._schedule_run_once()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -387,7 +465,7 @@ class HeyboxSignin(_PluginBase):
         if not self.get_state():
             return []
         try:
-            trigger = CronTrigger.from_crontab(self._cron)
+            trigger = CronTrigger.from_crontab(self._cron, timezone=settings.TZ)
         except Exception as err:
             logger.error(f"{self.plugin_name} Cron 表达式无效：{err}")
             return []
@@ -418,6 +496,12 @@ class HeyboxSignin(_PluginBase):
             "retry_count": 1,
             "retry_interval": 3,
             "share_tasks": True,
+            "time_limit_tasks": False,
+            "game_review_tasks": False,
+            "post_title": DEFAULT_POST_TITLE,
+            "post_content": DEFAULT_POST_CONTENT,
+            "review_content": DEFAULT_REVIEW_CONTENT,
+            "review_score": 5,
             "account_count": 1,
         }
         for index in range(1, self.MAX_ACCOUNT_COUNT + 1):
@@ -447,6 +531,23 @@ class HeyboxSignin(_PluginBase):
                         self.__col_text("retry_count", "失败重试次数", "1", 2, "number"),
                         self.__col_text("retry_interval", "重试间隔秒数", "3", 3, "number"),
                     ],
+                },
+                {
+                    "component": "VRow",
+                    "content": [self.__col_switch("time_limit_tasks", "执行限时发帖任务", 6),
+                                self.__col_switch("game_review_tasks", "执行游戏评价任务", 6)],
+                },
+                {
+                    "component": "VAlert",
+                    "props": {"type": "info", "variant": "tonal",
+                              "text": "发帖和评价默认关闭。启用后将发布下方内容，等待结算后删除本次创建的帖子；游戏评价会按所填分数提交，删除帖子不保证撤销评分。"},
+                },
+                {
+                    "component": "VRow",
+                    "content": [self.__col_text("post_title", "限时帖子标题", DEFAULT_POST_TITLE, 6),
+                                self.__col_text("post_content", "限时帖子正文", DEFAULT_POST_CONTENT, 6),
+                                self.__col_text("review_content", "游戏评价内容", DEFAULT_REVIEW_CONTENT, 9),
+                                self.__col_text("review_score", "游戏评分（1至5）", "5", 3, "number")],
                 },
                 *[self.__account_config_card(index) for index in range(1, self.MAX_ACCOUNT_COUNT + 1)],
                 {
@@ -525,13 +626,25 @@ class HeyboxSignin(_PluginBase):
         ]
 
     def stop_service(self):
-        pass
+        """Mark this instance stopped; network sessions are owned by each execution."""
+        self._stopped = True
+        self._enabled = False
+
+    def _schedule_run_once(self) -> None:
+        """Historical V2 hosts run once directly after resetting the switch."""
+        self._run_once()
+
+    def _run_once(self) -> None:
+        if not self._stopped:
+            self.signin(manual=True)
 
     def api_signin(self) -> Dict[str, Any]:
         return self.signin(manual=True)
 
     @eventmanager.register(EventType.PluginAction)
     def remote_signin(self, event: Event):
+        if self._stopped:
+            return
         event_data = event.event_data or {}
         if event_data.get("action") == "heybox_signin":
             self.signin(manual=True)
@@ -547,6 +660,7 @@ class HeyboxSignin(_PluginBase):
         logger.info(f"{self.plugin_name} 开始执行，账号数：{len(accounts)}")
         items = []
         for index, account_config in enumerate(accounts, start=1):
+            client = None
             name = account_config.get("name") or f"小黑盒账号 {index}"
             try:
                 account = HeyboxAccount(name, account_config.get("cookie") or "")
@@ -556,6 +670,9 @@ class HeyboxSignin(_PluginBase):
             except Exception as err:
                 logger.exception(f"{self.plugin_name} [{name}] 执行失败：{err}")
                 items.append(self.__item(False, name, "", f"执行失败：{err}", ""))
+            finally:
+                if client is not None:
+                    client.session.close()
 
         success_count = sum(1 for item in items if item.get("success"))
         success = success_count == len(items)
@@ -571,7 +688,7 @@ class HeyboxSignin(_PluginBase):
         done = set()
         unsupported = set()
         failures = []
-        daily_tasks = [task for task in snapshot.get("tasks", []) if self.__is_daily_task(task)]
+        daily_tasks = [task for task in snapshot.get("tasks", []) if self.__is_relevant_task(task)]
 
         for task in daily_tasks:
             if task.get("state") == FINISH_STATE:
@@ -586,9 +703,9 @@ class HeyboxSignin(_PluginBase):
             if not latest_task or latest_task.get("state") != WAITING_STATE:
                 continue
 
-            if not self._share_tasks and not self.__is_sign_task(latest_task):
+            if not self.__task_enabled(latest_task):
                 unsupported.add(latest_task.get("title") or key)
-                logs.append(f"{latest_task.get('title')}: 已跳过，分享任务未启用")
+                logs.append(f"{latest_task.get('title')}: 已跳过，对应任务开关未启用")
                 continue
 
             result = self.__execute_task(latest_task, client)
@@ -599,6 +716,9 @@ class HeyboxSignin(_PluginBase):
 
             snapshot = result.get("snapshot") or self.__fetch_snapshot(client)
             after = self.__find_task_by_key(snapshot, key)
+            if result.get("cleanup_failed"):
+                failures.append(result.get("message") or "删除本次帖子失败")
+                logs.append(result.get("message") or "删除本次帖子失败")
             if after and after.get("state") == FINISH_STATE:
                 done.add(after.get("title") or key)
                 award = f" 奖励: {latest_task.get('awardText')}" if latest_task.get("awardText") else ""
@@ -617,10 +737,8 @@ class HeyboxSignin(_PluginBase):
 
         remaining = [
             task for task in snapshot.get("tasks", [])
-            if self.__is_daily_task(task) and task.get("state") == WAITING_STATE
+            if self.__is_relevant_task(task) and self.__task_enabled(task) and task.get("state") == WAITING_STATE
         ]
-        if not self._share_tasks:
-            remaining = [task for task in remaining if self.__is_sign_task(task)]
 
         ok = not failures and not remaining
         message = f"完成 {len(done)} 个任务，当前总H币 {coin}"
@@ -631,11 +749,17 @@ class HeyboxSignin(_PluginBase):
         return self.__item(ok, account.name, account.heybox_id, message, "\n".join(logs))
 
     def __fetch_snapshot(self, client: HeyboxClient) -> Dict[str, Any]:
-        return self.__extract_task_list(client.get_json(PATH_LIST))
+        payload = client.get_json(PATH_LIST)
+        if not self.__is_ok_payload(payload):
+            raise RuntimeError(f"获取任务列表失败：{to_text(payload.get('msg')) or payload.get('status')}")
+        nested = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        if not isinstance(nested.get("task_list"), list):
+            raise RuntimeError("获取任务列表失败：返回结构不完整")
+        return self.__extract_task_list(payload)
 
     def __execute_task(self, task: Dict[str, Any], client: HeyboxClient) -> Dict[str, Any]:
-        if not self.__is_daily_task(task):
-            return {"ok": False, "unsupported": True, "message": "不是脚本处理的每日任务"}
+        if not self.__task_enabled(task):
+            return {"ok": False, "unsupported": True, "message": "对应任务开关未启用"}
         try:
             if self.__is_sign_task(task):
                 return self.__execute_sign(client)
@@ -646,6 +770,10 @@ class HeyboxSignin(_PluginBase):
                 return self.__execute_share_game_detail(task, client)
             if task_id == "31":
                 return self.__execute_share_game_comment(task, client)
+            if task_id == "33":
+                return self.__execute_time_limit_task(task, client)
+            if task_id == "24":
+                return self.__execute_game_review_task(task, client)
             return {"ok": False, "unsupported": True, "message": f"未支持任务 task_id={task_id}"}
         except Exception as err:
             return {"ok": False, "message": f"{task.get('title')} 请求异常 {err}"}
@@ -730,6 +858,102 @@ class HeyboxSignin(_PluginBase):
         self.__send_share_events(client, "game_comment", {"link_id": comment["linkId"]})
         return self.__settle_share_task(task, client, f"appid={game['appid']}")
 
+    def __delete_created_post(self, client: HeyboxClient, link_id: str) -> str:
+        """Delete only the numeric post ID returned by this execution's create response."""
+        try:
+            response = client.post_json(PATH_BBS_DELETE, {"link_id": link_id})
+            if self.__is_ok_payload(response):
+                return ""
+            reason = to_text(response.get("msg")) or to_text(response.get("status")) or "未知错误"
+        except Exception as err:
+            reason = str(err)
+        return f"删除本次帖子失败 link_id={link_id}：{reason}"
+
+    def __create_and_settle_post(self, task: Dict[str, Any], client: HeyboxClient,
+                                 create, attempts: int, wait_seconds: float) -> Dict[str, Any]:
+        """Check server settlement and clean up this attempt even if polling fails."""
+        if self._stopped:
+            return {"ok": False, "message": "插件已停止，未发布内容"}
+        response = create()
+        if not self.__is_ok_payload(response):
+            return {"ok": False, "message": f"发布失败：{to_text(response.get('msg')) or response.get('status')}"}
+        nested = response.get("result") if isinstance(response.get("result"), dict) else {}
+        link_id = to_text(nested.get("link_id") or response.get("link_id"))
+        if not re.fullmatch(r"\d+", link_id):
+            return {"ok": False, "cleanup_failed": True,
+                    "message": "发布接口未返回有效 link_id，无法自动确认或删除，请检查账号内容"}
+        result = {"ok": False, "message": f"已发布 link_id={link_id}，等待超时但任务未完成"}
+        try:
+            for _ in range(attempts):
+                if self._stopped:
+                    result["message"] = "插件已停止，正在删除本次帖子"
+                    break
+                time.sleep(wait_seconds)
+                snapshot = self.__fetch_snapshot(client)
+                result["snapshot"] = snapshot
+                after = self.__find_task_by_key(snapshot, self.__task_key(task))
+                if after and after.get("state") == FINISH_STATE:
+                    result.update(ok=True, message=f"{task.get('title')} 已完成，link_id={link_id}")
+                    break
+        except Exception as err:
+            result.update(ok=False, message=f"已发布 link_id={link_id}，回查任务失败：{err}")
+        finally:
+            cleanup_error = self.__delete_created_post(client, link_id)
+        if cleanup_error:
+            result.update(ok=False, cleanup_failed=True,
+                          message=f"{result['message']}；{cleanup_error}")
+        else:
+            result["message"] += "；本次帖子已删除"
+        return result
+
+    def __execute_time_limit_task(self, task: Dict[str, Any], client: HeyboxClient) -> Dict[str, Any]:
+        """Port upstream task 33, including both topic_id locations in maxjia."""
+        parsed = parse_maxjia(task.get("maxjia")) or {}
+        params = parsed.get("params") if isinstance(parsed.get("params"), dict) else {}
+        topic_id = to_text(params.get("topic_id") or parsed.get("topic_id"))
+        if not re.fullmatch(r"\d+", topic_id):
+            return {"ok": False, "unsupported": True, "message": "限时发帖缺少有效 topic_id"}
+        if not self._post_title or not self._post_content:
+            return {"ok": False, "message": "请填写限时帖子标题和正文"}
+        body = {"draft": "0", "topic_ids": topic_id, "link_tag": "27",
+                "text": json.dumps([{"checked": False, "text": self._post_content, "type": "text"}],
+                                   ensure_ascii=False, separators=(",", ":")),
+                "title": self._post_title, "desc": self._post_content}
+        return self.__create_and_settle_post(task, client, lambda: client.post_json(PATH_BBS_POST, body),
+                                            attempts=1, wait_seconds=3)
+
+    def __execute_game_review_task(self, task: Dict[str, Any], client: HeyboxClient) -> Dict[str, Any]:
+        """Port upstream task 24 using local Web signing and configurable review content."""
+        parsed = parse_maxjia(task.get("maxjia")) or {}
+        app_id = to_text(parsed.get("app_id"))
+        if not re.fullmatch(r"\d+", app_id):
+            return {"ok": False, "unsupported": True, "message": "游戏评价缺少有效 app_id"}
+        if not self._review_content:
+            return {"ok": False, "message": "请填写游戏评价内容"}
+        response = client.get_json(PATH_GAME_COMMENTS, {**GAME_COMMENTS_QUERY_BASE, "appid": app_id})
+        if not self.__is_ok_payload(response):
+            return {"ok": False, "message": "获取游戏 topic_id 失败"}
+        nested = response.get("result") if isinstance(response.get("result"), dict) else {}
+        links = nested.get("links") if isinstance(nested.get("links"), list) else []
+        first = links[0] if links and isinstance(links[0], dict) else {}
+        topics = first.get("topics") if isinstance(first.get("topics"), list) else []
+        topic = topics[0] if topics and isinstance(topics[0], dict) else {}
+        topic_id = to_text(topic.get("topic_id"))
+        if not re.fullmatch(r"\d+", topic_id):
+            return {"ok": False, "message": "无法获取游戏 topic_id"}
+        body = {"link_tag": "3", "appid": app_id, "score": str(self._review_score),
+                "topic_ids": topic_id, "draft": "0", "title": self._review_content,
+                "desc": self._review_content,
+                "text": json.dumps([{"checked": False, "text": self._review_content, "type": "text"}],
+                                   ensure_ascii=False, separators=(",", ":"))}
+        web_client = HeyboxWebClient(client.account, self._timeout, self._retry_count, self._retry_interval)
+        try:
+            return self.__create_and_settle_post(task, client,
+                                                lambda: web_client.post_json(PATH_BBS_POST, body),
+                                                attempts=7, wait_seconds=2)
+        finally:
+            web_client.session.close()
+
     def __settle_share_task(self, task: Dict[str, Any], client: HeyboxClient, detail: str = "") -> Dict[str, Any]:
         time.sleep(SHARE_TASK_SETTLE_SECONDS)
         snapshot = self.__fetch_snapshot(client)
@@ -779,9 +1003,9 @@ class HeyboxSignin(_PluginBase):
                     desc = to_text(award.get("desc"))
                     icon = to_text(award.get("icon"))
                     if "b9aca51c" in icon:
-                        award_texts.append(f"{desc}H币")
-                    elif "c10d89ae" in icon:
                         award_texts.append(f"{desc}经验")
+                    elif "c10d89ae" in icon:
+                        award_texts.append(f"{desc}H币")
                     elif "e63b192a" in icon:
                         award_texts.append(f"{desc}盒电")
                     elif desc:
@@ -794,6 +1018,7 @@ class HeyboxSignin(_PluginBase):
                     "taskId": to_text(report_extra.get("task_id")),
                     "taskType": to_text(item.get("type")),
                     "reportTaskType": to_text(report_extra.get("task_type")),
+                    "maxjia": to_text(item.get("maxjia")),
                     "awardText": " ".join(filter(None, award_texts)),
                 })
 
@@ -892,6 +1117,20 @@ class HeyboxSignin(_PluginBase):
     def __is_daily_task(self, task: Dict[str, Any]) -> bool:
         return self.__is_sign_task(task) or task.get("reportTaskType") == "daily"
 
+    def __is_relevant_task(self, task: Dict[str, Any]) -> bool:
+        """Include upstream implemented time-limit tasks in the account task list."""
+        return self.__is_daily_task(task) or task.get("taskId") in {"1", "19", "31", "33", "24"}
+
+    def __task_enabled(self, task: Dict[str, Any]) -> bool:
+        """Keep public content writes separate from existing daily share settings."""
+        if self.__is_sign_task(task):
+            return True
+        if task.get("taskId") == "33":
+            return self._time_limit_tasks
+        if task.get("taskId") == "24":
+            return self._game_review_tasks
+        return self._share_tasks
+
     def __load_account_configs(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         accounts = []
         for index in range(1, self.MAX_ACCOUNT_COUNT + 1):
@@ -936,6 +1175,12 @@ class HeyboxSignin(_PluginBase):
             "retry_count": self._retry_count,
             "retry_interval": self._retry_interval,
             "share_tasks": self._share_tasks,
+            "time_limit_tasks": self._time_limit_tasks,
+            "game_review_tasks": self._game_review_tasks,
+            "post_title": self._post_title,
+            "post_content": self._post_content,
+            "review_content": self._review_content,
+            "review_score": self._review_score,
             "account_count": self._account_count,
         }
         for index, account in enumerate(self._account_configs[:self.MAX_ACCOUNT_COUNT], start=1):
