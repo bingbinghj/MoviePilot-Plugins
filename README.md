@@ -146,8 +146,6 @@ Cron 使用 MoviePilot 配置的时区。支持一次性任务接口的 V3 宿�
 
 未手工填写 Redis URL 时，仅在 `CACHE_BACKEND_TYPE=redis` 时读取 `CACHE_BACKEND_URL`。使用 cachetools 时不自动连接默认 Redis 地址。“只通知不重启”及缺少自定义命令时不会记录为已触发重启。
 
-验证使用 MoviePilot V3.1.8 源码、Python 3.14 和宿主锁定依赖，覆盖真实 SDK、临时 SQLite、动态 API 注册、事件重载及资源清理。第三方站点签到和真实进程退出使用替身，未使用账号进行线上签到。运行方法见[测试说明](tests/README.md)。
-
 ## 免责声明
 
 本仓库插件仅用于个人学习和自动化管理。使用前请确认目标站点规则，账号安全和使用后果由使用者自行承担。
