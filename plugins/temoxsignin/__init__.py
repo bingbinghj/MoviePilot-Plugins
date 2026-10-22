@@ -13,14 +13,14 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
 
-from .messages import credit_prompt, login_prompt
+from .messages import LoginMessages, cookies_for_url, credit_prompt, login_prompt
 
 
 class TemoxSignin(_PluginBase):
     plugin_name = "中国特摄联盟自动登录"
     plugin_desc = "每天自动登录中国特摄联盟，并处理站点算术验证。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "temoxsignin_"
@@ -360,13 +360,15 @@ class TemoxSignin(_PluginBase):
         try:
             response = self.__get_with_gate(session, login_url)
             text = self.__response_text(response)
+            if not 200 <= response.status_code < 300 or not LoginMessages(self._site_url).same_origin(response.url):
+                text = ""
 
             form = self.__extract_login_form(text)
             if not form:
                 if self.__is_logged_in(text):
                     message = self.__success_message(
                         self.__extract_success_message(text) or "当前会话已处于登录状态",
-                        reward=self.__credit_message(session, text))
+                        reward=credit_prompt(text, cookies_for_url(session.cookies, response.url or login_url)))
                     return self.__finish(True, "登录成功", message)
                 return self.__finish(False, "登录失败", "未能在页面中找到 Discuz 登录表单")
 
@@ -385,24 +387,35 @@ class TemoxSignin(_PluginBase):
             else:
                 payload.pop("answer", None)
 
+            prompts = LoginMessages(self._site_url)
+
+            def capture_prompt(response, **kwargs):
+                prompts.observe(response.url, self.__response_text(response), response.cookies, response.status_code)
+
             login_response = session.post(
                 post_url,
                 data=payload,
                 headers={"Referer": login_url},
                 timeout=self._timeout,
+                hooks={"response": capture_prompt},
             )
             login_text = self.__response_text(login_response)
-            # Read the popup before the next page can replace or clear its cookies.
-            reward = self.__credit_message(session, login_text)
+            if not prompts.same_origin(login_response.url) or not 200 <= login_response.status_code < 300:
+                login_text = ""
 
             check_url = urljoin(f"{self._site_url}/", "forum.php")
             check_response = self.__get_with_gate(session, check_url)
             check_text = self.__response_text(check_response)
+            for response in [*check_response.history, check_response]:
+                capture_prompt(response)
+            check_valid = prompts.same_origin(check_response.url) and 200 <= check_response.status_code < 300
+            if not check_valid:
+                check_text = ""
 
-            if self.__is_logged_in(login_text) or self.__is_logged_in(check_text):
+            if check_valid and not prompts.anonymous and (self.__is_logged_in(login_text) or self.__is_logged_in(check_text)):
                 message = self.__success_message(
-                    self.__extract_success_message(login_text) or "登录成功，已获取登录态",
-                    reward=reward or self.__credit_message(session, check_text),
+                    prompts.welcome or "登录成功，已获取登录态",
+                    reward=prompts.reward,
                 )
                 return self.__finish(True, "登录成功", message)
 
@@ -557,11 +570,6 @@ class TemoxSignin(_PluginBase):
         if not reward or reward in base:
             return base
         return f"{base}。{reward}"
-
-    @staticmethod
-    def __credit_message(session: requests.Session, text: str) -> Optional[str]:
-        """Read the same daily credit notification Cookie that Discuz renders."""
-        return credit_prompt(text, session.cookies.get_dict())
 
     @staticmethod
     def __clean_text(value: str) -> str:

@@ -3,10 +3,12 @@
 import html
 from html.parser import HTMLParser
 import re
-from urllib.parse import unquote
+import time
+from urllib.parse import unquote, urlsplit
 
 
 JS_STRING = r'''(?P<quote>["'])(?P<value>(?:\x5c.|(?!(?P=quote)).)*)(?P=quote)'''
+JS_ARGUMENT = r'''(?:'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")'''
 
 
 def clean_text(value: str) -> str:
@@ -84,17 +86,30 @@ def rendered_messages(text: str) -> list:
 
 def login_prompt(text: str):
     """Read the actual welcome message, including Discuz's succeedlocation assignment."""
-    pattern = (r'''\$\(\s*["'](?:succeedlocation|succeedmessage)["']\s*\)\.innerHTML\s*=\s*'''
-               + JS_STRING + r"\s*(?:;|$)")
-    for match in re.finditer(pattern, text, re.S):
-        prompt = clean_text(js_string(match.group("value")))
-        if prompt:
-            return prompt
     messages = rendered_messages(text)
-    for target in ("succeedlocation", "succeedmessage", "messagetext"):
-        for name, prompt in messages:
-            if name == target and prompt and (target != "messagetext" or "欢迎您回来" in prompt):
+    for target in ("succeedlocation", "succeedmessage"):
+        pattern = (r'''\$\(\s*["']''' + target + r'''["']\s*\)\.innerHTML\s*=\s*'''
+                   + JS_STRING + r"\s*(?:;|$)")
+        for match in re.finditer(pattern, text, re.S):
+            prompt = clean_text(js_string(match.group("value")))
+            if prompt:
                 return prompt
+        for name, prompt in messages:
+            if name == target and prompt:
+                return prompt
+    # Official AJAX responses can carry the welcome only in a callback or dialog.
+    patterns = (
+        r"\bsucceedhandle_\w*\s*\(\s*" + JS_ARGUMENT + r"\s*,\s*" + JS_STRING + r"\s*,",
+        r"\bshowDialog\s*\(\s*" + JS_STRING + r'''\s*,\s*["']right["']\s*[,)]''',
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.S):
+            prompt = clean_text(js_string(match.group("value")))
+            if "欢迎您回来" in prompt:
+                return prompt
+    for name, prompt in messages:
+        if name == "messagetext" and "欢迎您回来" in prompt:
+            return prompt
     # Some Discuz AJAX responses put their welcome string directly in a literal.
     match = re.search(r'''欢迎您回来[^<\r\n"';]*''', re.sub(r"<script\b.*?</script>", "", text, flags=re.I | re.S))
     return clean_text(match.group(0)) if match else None
@@ -129,3 +144,106 @@ def credit_prompt(text: str, cookies: dict):
         return None
     rule = clean_text(unquote(cookies.get(prefix + "creditrule", "")))
     return " ".join(([rule] if rule else []) + parts)
+
+
+def origin(url: str):
+    """Compare actual origins, including the port used by this Discuz site."""
+    try:
+        parsed = urlsplit(url)
+        return parsed.scheme.lower(), parsed.hostname, parsed.port or {"http": 80, "https": 443}.get(parsed.scheme)
+    except (TypeError, ValueError):
+        return None
+
+
+def cookies_for_url(cookies, url: str, timestamp=None) -> dict:
+    """Keep Cookie domain, path and Secure scope instead of flattening the whole jar."""
+    parsed = urlsplit(url)
+    host, path = parsed.hostname or "", parsed.path or "/"
+    values = {}
+    timestamp = time.time() if timestamp is None else timestamp
+    for cookie in sorted(cookies, key=lambda item: len(item.path or "/")):
+        if cookie.is_expired(timestamp):
+            continue
+        domain = cookie.domain.lstrip(".").lower()
+        if not domain or not (host == domain or (cookie.domain_specified and host.endswith("." + domain))):
+            continue
+        cookie_path = cookie.path or "/"
+        if path != cookie_path and not (path.startswith(cookie_path) and
+                                        (cookie_path.endswith("/") or path[len(cookie_path):].startswith("/"))):
+            continue
+        if cookie.secure and parsed.scheme != "https":
+            continue
+        values[cookie.name] = cookie.value
+    return values
+
+
+class LoginMessages:
+    """Keep this login's response evidence until its authenticated page supplies labels."""
+
+    def __init__(self, site_url: str):
+        self._origin = origin(site_url)
+        self._cookies = {}
+        self._snapshots = []
+        self._pages = []
+        self._identity = ("", "")
+        self._rendered = []
+        self._welcomes = []
+
+    def same_origin(self, url: str) -> bool:
+        return self._origin is not None and origin(url) == self._origin
+
+    def observe(self, url: str, text: str, cookies, status: int = 200) -> None:
+        if not self.same_origin(url):
+            return
+        if not 200 <= status < 400:
+            return
+        # Start empty: pre-login or earlier sessions' credit Cookies are not evidence.
+        for cookie in cookies:
+            if cookie.name.endswith(("creditnotice", "creditrule", "creditbase")):
+                self._cookies[(cookie.name, cookie.domain, cookie.path)] = cookie
+        if self._cookies:
+            self._snapshots.append((tuple(self._cookies.values()), time.time()))
+        if not 200 <= status < 300:
+            return
+        prefix, uid = variable(text, "cookiepre"), variable(text, "discuz_uid")
+        if re.fullmatch(r"\d+", uid):
+            self._identity = (uid, prefix)
+        welcome = login_prompt(text)
+        if welcome:
+            self._welcomes.append((uid, welcome))
+        if prefix and re.fullmatch(r"[1-9]\d*", uid) and variable(text, "creditnotice"):
+            self._pages.append((uid, prefix, url, text))
+        rendered = credit_prompt(text, {})
+        if rendered:
+            self._rendered.append((uid, prefix, rendered))
+
+    @property
+    def anonymous(self):
+        return self._identity[0] == "0"
+
+    @property
+    def welcome(self):
+        uid = self._identity[0]
+        if uid == "0":
+            return None
+        prompts = [prompt for owner, prompt in self._welcomes if not owner or owner == uid]
+        return next((prompt for prompt in reversed(prompts) if "欢迎您回来" in prompt),
+                    prompts[-1] if prompts else None)
+
+    @property
+    def reward(self):
+        uid, prefix = self._identity
+        if not uid or uid == "0":
+            return None
+        # A later deletion must not erase the notification returned by an earlier hop.
+        for owner, page_prefix, prompt in reversed(self._rendered):
+            if owner == uid and page_prefix == prefix:
+                return prompt
+        for owner, page_prefix, page_url, page in reversed(self._pages):
+            if owner != uid or page_prefix != prefix:
+                continue
+            for snapshot, timestamp in self._snapshots:
+                reward = credit_prompt(page, cookies_for_url(snapshot, page_url, timestamp))
+                if reward:
+                    return reward
+        return None
