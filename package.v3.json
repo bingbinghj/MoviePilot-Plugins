@@ -43,5 +43,18 @@
       "v2.0.0": "完善V3 SDK兼容、API模型、宿主时区及一次性任务生命周期，释放网络连接；保留原配置和API字段。",
       "v1.0.1": "历史V3适配版本。"
     }
+  },
+  "ETKScrapeWebhook": {
+    "name": "ETK刮削完成通知",
+    "description": "合并MoviePilot刮削完成批次，验证NFO后通知emby-toolkit。",
+    "labels": "ETK,刮削,Webhook",
+    "version": "3.0.1",
+    "icon": "webhook.png",
+    "author": "bingbinghj",
+    "level": 1,
+    "history": {
+      "v3.0.1": "兼容MoviePilot V3 SDK及媒体来源身份，保留零次通知重试设置。"
+    },
+    "system_version": ">=3.0.0"
   }
 }

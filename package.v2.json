@@ -38,5 +38,18 @@
     "history": {
       "v1.1.0": "同步上游15f7fb8：修复奖励标签及maxjia解析，新增可选限时发帖和游戏评价、本地Web签名及帖子清理回查。"
     }
+  },
+  "ETKScrapeWebhook": {
+    "name": "ETK刮削完成通知",
+    "description": "合并MoviePilot刮削完成批次，验证NFO后通知emby-toolkit。",
+    "labels": "ETK,刮削,Webhook",
+    "version": "1.1.0",
+    "icon": "webhook.png",
+    "author": "bingbinghj",
+    "level": 1,
+    "history": {
+      "v1.1.0": "合并整理与刮削批次，保留关闭通知重试的设置并兼容日志接口。"
+    },
+    "system_version": ">=2.0.0,<3.0.0"
   }
 }

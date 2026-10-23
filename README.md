@@ -1,6 +1,6 @@
 # MoviePilot-Plugins
 
-个人维护的 MoviePilot 插件仓库，同时提供 MoviePilot V2 与 V3 独立版本。
+个人维护的 MoviePilot 插件仓库，ETK 插件提供 MoviePilot V1、V2 与 V3 独立版本。
 
 维护者：[bingbinghj](https://github.com/bingbinghj)
 
@@ -19,6 +19,7 @@ https://github.com/bingbinghj/MoviePilot-Plugins
 | `TemoxSignin` | 中国特摄联盟自动登录 | 每天自动登录中国特摄联盟，并处理站点算术验证。 |
 | `RedisAutoRestart` | Redis异常自动重启 | 检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。 |
 | `HeyboxSignin` | 小黑盒每日任务 | 根据小黑盒 App 接口执行每日签到和支持的每日任务。 |
+| `ETKScrapeWebhook` | ETK刮削完成通知 | 合并刮削完成批次，校验 NFO 后通知 emby-toolkit。 |
 
 ## 安装方式
 
@@ -152,3 +153,15 @@ Cron 使用 MoviePilot 配置的时区。支持一次性任务接口的 V3 宿�
 ## 免责声明
 
 本仓库插件仅用于个人学习和自动化管理。使用前请确认目标站点规则，账号安全和使用后果由使用者自行承担。
+
+## ETK 刮削完成通知
+
+插件 ID：`ETKScrapeWebhook`。MoviePilot 会按版本从 `plugins/`、`plugins.v2/` 或 `plugins.v3/` 安装对应实现，三个版本使用相同配置字段。
+
+Webhook 地址填写 `http://<emby-toolkit地址>:5257/webhook/moviepilot`，共享密钥填写 emby-toolkit 中的“Emby Webhook共享密钥”。合并等待建议 10 秒；失败重试可设为 0。
+
+- **V1**：接收原生整理完成事件，合并本批已完成文件；手动刮削仍由 MoviePilot 执行，返回后校验本地 NFO 再通知。V1 没有 V2/V3 的整理队列及元数据刮削事件，不接管逐文件刮削，也不等待尚未完成或未入队的文件。手动云端刮削无法本地验证 NFO，不发送完成通知。
+- **V2**：接管 `MetadataScrape`，等待同一媒体的整理队列完成，合并精确文件后执行 MoviePilot 基础刮削。停用时恢复原监听器。
+- **V3**：使用原生 SDK 与 `media_source + media_id + type` 身份，只接管影视；音乐和未知类型交回 MoviePilot。只支持一个启用实例。
+
+NFO 不完整时发送失败状态，emby-toolkit 不启动后置增强。保持精确文件范围，避免新增单季扩大为整剧。V2/V3 搭配 P115StrmHelper 时，只保留整理监控的 STRM 自动刮削入口，关闭其他重复刮削入口和提前触发 ETK 的实时监控。
