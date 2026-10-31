@@ -12,7 +12,7 @@ https://raw.githubusercontent.com/yowiv08/heybox/refs/heads/main/heybox_sign.js
 ## 功能
 
 - 支持多个小黑盒账号。
-- 使用 `pkey` 和 `x_xhh_tokenid` Cookie 调用小黑盒 App 接口。
+- 使用账号 Cookie 和真实设备参数调用小黑盒 App 接口。
 - 执行每日签到。
 - 可选执行原脚本支持的每日分享任务：
   - 分享帖子任务 `task_id=1`
@@ -29,30 +29,32 @@ https://raw.githubusercontent.com/yowiv08/heybox/refs/heads/main/heybox_sign.js
 - `发送通知`：执行结束后发送 MoviePilot 通知。
 - `执行分享任务`：控制每日分享任务；与新增的发帖、评价开关独立。
 - `执行限时发帖任务`：默认关闭；开启后向任务下发的主题发布配置的标题、正文，回查结算后删除本次帖子。
-- `执行游戏评价任务`：默认关闭；开启后通过 Web 接口提交配置的评价和评分，最多回查 7 次，每次间隔 2 秒，之后删除本次帖子。
+- `执行游戏评价任务`：默认关闭；开启后通过 App 接口提交配置的评价和评分，最多回查 7 次，每次间隔 2 秒，之后删除本次帖子。
 - `限时帖子标题` / `限时帖子正文` / `游戏评价内容` / `游戏评分（1至5）`：实际发布的内容和评分。删除帖子不保证撤销评分。
 - `Cron 表达式`：默认 `10 9 * * *`。
 - `请求超时秒数`、`失败重试次数`、`重试间隔秒数`：控制接口请求。
 - `Cookie`：填写小黑盒 Cookie，至少包含：
 
 ```text
-pkey=xxx;x_xhh_tokenid=xxx;
+pkey=xxx;x_xhh_tokenid=xxx;imei=实际设备标识;device_info=实际设备型号;os_version=16;dw=411;
 ```
 
-插件会从 `pkey` 解析 `heybox_id`，并用 `pkey` 生成和原脚本一致的 `imei`。
+插件从 `pkey` 解析 `heybox_id`。`imei`、`device_info`、`os_version`、`dw` 必须使用当前 App 请求中的真实值，示例中的系统版本与宽度仅表示格式；`channel` 可按抓包值附加，也可省略。iOS 抓包中的 `device_id` 原值填写到 `imei`，不要改写为其他格式。
+
+升级前只有 `pkey` 和 `x_xhh_tokenid` 的旧 Cookie 需要补充这些设备字段。插件保留已有账号和任务开关，但不再生成 IMEI 或套用固定设备；缺少必需字段时会在联网前提示需要补充的字段。
 
 ## 加密和上报说明
 
 原脚本里每日任务的 App 接口分两类：
 
 1. 普通接口请求
-   - 先请求 `https://hkey.qcciii.com/hkey` 获取 `hkey`、`version`、`build`。
-   - 再把 `hkey`、`imei`、`heybox_id`、`nonce`、客户端版本等参数拼到小黑盒接口 URL 上。
+   - 先请求 `https://hkey.qcciii.com/hkey` 获取 `hkey`、`_rnd`、`version`、`build`，请求携带当前设备的 `os_version`。
+   - 再把 `hkey`、`_rnd`、`imei`、`heybox_id`、`nonce`、客户端版本等参数拼到小黑盒接口 URL 上。
    - 用于任务列表、签到状态、帖子流、游戏推荐、评论列表等接口。
 
 2. 加密上报请求
-   - 原脚本没有在本地直接加密 App 上报内容，而是把待上报 JSON 发给 `hkey.qcciii.com/hkey`，参数 `mode=report`。
-   - hkey 服务返回已经处理好的 `data`、`key`、`sid`、`hkey`。
+   - 原脚本没有在本地直接加密 App 上报内容，而是把待上报 JSON 发给 `hkey.qcciii.com/hkey`，参数 `mode=report`，同样携带当前设备的 `os_version`。
+   - hkey 服务返回已经处理好的 `data`、`key`、`sid`、`hkey`、`_rnd`，插件校验签名时间与请求一致。
    - 插件再把这些字段以表单方式 POST 到 `https://data.xiaoheihe.cn`。
 
 本插件按原脚本复刻这个流程。
@@ -64,22 +66,23 @@ pkey=xxx;x_xhh_tokenid=xxx;
 - 分享行为：`/account/data_report/`
   - 上报 `/share/behavior/tap`
   - 上报 `/share/behavior/success`
-  - `addition` 中包含 `src`、`plat=WechatSession`，以及对应的 `link_id` 或 `app_id`。
+  - `addition` 中包含 `src`、`plat=WechatSession`，以及对应的 `link_id` 或 `appid`（游戏详情分享使用 `appid`，不再上报旧的 `app_id` / `h_src`）。
 
 原项目 `report.js` 里还有 Web 端 AES/RSA 加密逻辑，但 `heybox_sign.js` 的每日任务走的是 App 端 `postEncryptedForm`，也就是上面的 hkey report 流程。
 
-游戏评价发帖使用原项目 `signature.js` 的本地 Web hkey 算法，不使用 App hkey 服务，也不走 Web AES/RSA 上报。Web Cookie 保留已有字段，缺失时补充 `x_pkey` 和 `x_heybox_id`。普通限时发帖和删除使用 App 签名。
+游戏评价、限时发帖和删除均使用 App 签名。游戏评价按上游提交 `link_tag=3`、`appid`、`score`、评价正文和 `game_impression_post_type=2`，保留空的 `h_src=` 查询参数；不再拉取主题 ID 或使用 Web 发帖。
 
 ## 上游同步
 
-同步至 `yowiv08/heybox` 提交 `15f7fb8bffd2f6d58b1e38755002939fc919b055`（2026-10-07）。
+同步至 `yowiv08/heybox` 提交 `2a405b053ec97a0e7204272ea4af97ee025ac9b3`（2026-10-29）。
 
-- 修复 `maxjia` 解码，支持 `params.topic_id` 和顶层 `topic_id`；游戏评价读取 `app_id`。
-- 修复奖励标签：`b9aca51c` 为经验，`c10d89ae` 为 H 币。
-- 新增上游限时发帖和游戏评价任务；两者默认关闭，保留现有账号配置。
-- 创建内容的请求不自动重试，避免响应不明时重复发帖。
-- 回查失败、超时或停用时仍尝试删除本次创建的帖子；删除失败明确显示 `link_id`，不计为整体成功。
-- 任务列表返回错误或结构不完整时报告失败，避免误判为任务全部完成。
+- 普通签名和加密上报补齐 `os_version`，校验并传递服务返回的 `_rnd`，修复签名服务 HTTP 400。
+- 设备字段按账号从 Cookie 读取；`channel` 可省略，旧 Cookie 需补充真实设备字段。
+- 同步帖子流参数、推荐游戏解析及游戏详情分享的 `appid` 上报。
+- 游戏评价改用 App 接口，保留自定义内容和评分以及结算后清理。
+- 校验 H 币数据、核心每日任务和任务状态；回查缺少初始任务时报告失败，执行失败不被后续“已完成”状态覆盖。
+- 只对可重试的网络错误重试读取请求；HTTP、JSON、业务错误不重试，发帖、删除和上报不重复提交。
+- 保留两种 `topic_id` 位置和奖励标签修复；回查失败、超时或停用后仍清理本次帖子，清理失败显示 `link_id`。
 
 实现经过离线请求和结算模拟，没有使用真实账号发帖或评分；服务器规则、登录态或签名服务变化仍可能导致任务失败。
 
@@ -91,4 +94,4 @@ pkey=xxx;x_xhh_tokenid=xxx;
 
 ## V2 兼容
 
-版本 `1.1.0` 使用 V2 公开接口，保持原有账号与分享开关；新增任务设置独立保存。Cron 使用宿主配置时区，每次账号执行结束释放 App / Web HTTP 连接。
+版本 `1.2.0` 使用 V2 公开接口，保持原有账号与分享开关；新增任务设置独立保存。Cron 使用宿主配置时区，每次账号执行结束释放 HTTP 连接。

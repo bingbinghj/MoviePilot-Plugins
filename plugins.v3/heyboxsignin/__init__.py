@@ -1,5 +1,4 @@
 import base64
-import hashlib
 import json
 import re
 import secrets
@@ -42,12 +41,15 @@ APP_PROFILE = {
     "os_type": "Android",
     "x_os_type": "Android",
     "x_client_type": "mobile",
-    "os_version": "12",
-    "dw": "360",
-    "channel": "heybox",
     "x_app": "heybox",
     "time_zone": "Asia/Shanghai",
-    "device_info": "HBP-AL00",
+}
+APP_DEVICE_KEYS = {"imei", "device_info", "os_version", "dw", "channel"}
+IDENTITY_COOKIE_KEYS = {"pkey", "x_xhh_tokenid", "x_pkey", "x_heybox_id"}
+APP_SIGNED_KEYS = {
+    "heybox_id", "imei", "device_info", "nonce", "hkey", "_rnd", "_time",
+    "os_type", "x_os_type", "x_client_type", "os_version", "version", "build",
+    "dw", "channel", "x_app", "time_zone",
 }
 
 PATH_LIST = "/task/list_v2/"
@@ -60,14 +62,14 @@ PATH_VIEW_TIME = "/bbs/app/link/view/time"
 PATH_DATA_REPORT = "/account/data_report/"
 PATH_BBS_POST = "/bbs/app/api/link/post"
 PATH_BBS_DELETE = "/bbs/app/link/delete"
-UPSTREAM_REVISION = "15f7fb8bffd2f6d58b1e38755002939fc919b055"
+UPSTREAM_REVISION = "2a405b053ec97a0e7204272ea4af97ee025ac9b3"
 DEFAULT_POST_TITLE = "前面忘了中间忘了后面也忘了"
 DEFAULT_POST_CONTENT = "孩子很爱用，很好吃，会复购"
 DEFAULT_REVIEW_CONTENT = "好玩推荐游戏体验非常好"
 WEB_PROFILE = {"app": "heybox", "os_type": "web", "x_app": "heybox",
-               "x_client_type": "web", "x_os_type": "Android", "x_client_version": "1.3.389"}
+               "x_client_type": "web", "x_os_type": "Android", "x_client_version": "1.3.393"}
 WEB_UA = ("Mozilla/5.0 (Linux; Android 16; 23113RKC6C Build/BP2A.250605.031.A3; wv) "
-          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.7499.192 Mobile Safari/537.36")
+          "AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/143.0.7499.192 Mobile Safari/537.36")
 
 WAITING_STATE = "waiting"
 FINISH_STATE = "finish"
@@ -77,10 +79,15 @@ SHARE_TASK_SETTLE_SECONDS = 2.2
 
 FEEDS_QUERY_BASE = {
     "pull": "1",
-    "last_pull": "1",
-    "is_first": "0",
+    "is_first": "1",
     "list_ver": "2",
-    "has_cache": "1",
+    "use_waterfall_style": "2",
+    "has_cache": "0",
+    "media_volume_percent": "6",
+    "audio_output_type": "speaker",
+    "screen_brightness_percent": "68",
+    "thermal_state": "nominal",
+    "is_charging": "0",
     "netmode": "wifi",
 }
 GAME_RECOMMEND_QUERY_BASE = {"offset": "0", "limit": "1"}
@@ -94,7 +101,8 @@ def to_text(value: Any) -> str:
 
 
 def build_query_string(source: Dict[str, Any]) -> str:
-    return urlencode({key: str(value) for key, value in (source or {}).items() if value not in (None, "")})
+    # Empty h_src is meaningful to App review requests in the upstream client.
+    return urlencode({key: str(value) for key, value in (source or {}).items() if value is not None})
 
 
 def make_nonce(length: int = 32) -> str:
@@ -102,15 +110,31 @@ def make_nonce(length: int = 32) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
-def pick_cookie(cookie: str, key: str) -> str:
-    for raw in str(cookie or "").split(";"):
+def parse_cookie_map(cookie: str) -> Dict[str, str]:
+    """Keep one account identity and its captured App device fields."""
+    if cookie is not None and not isinstance(cookie, str):
+        raise ValueError("Cookie 必须为字符串")
+    if re.search(r"[\x00-\x1f\x7f]", cookie or ""):
+        raise ValueError("Cookie 含有非法控制字符")
+    values = {}
+    for raw in (cookie or "").split(";"):
         item = raw.strip()
-        if not item or "=" not in item:
+        if not item:
             continue
+        if "=" not in item:
+            raise ValueError("Cookie 字段格式错误，应为 name=value")
         name, value = item.split("=", 1)
-        if name.strip() == key:
-            return value.strip()
-    return ""
+        name = name.strip()
+        if not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name):
+            raise ValueError("Cookie 字段名格式错误")
+        if name in IDENTITY_COOKIE_KEYS | APP_DEVICE_KEYS and name in values:
+            raise ValueError(f"Cookie 包含重复字段 {name}")
+        values[name] = value.strip()
+    return values
+
+
+def pick_cookie(cookie: str, key: str) -> str:
+    return parse_cookie_map(cookie).get(key, "")
 
 
 def decode_pkey_to_user_id(cookie: str) -> str:
@@ -122,20 +146,22 @@ def decode_pkey_to_user_id(cookie: str) -> str:
     except Exception:
         return ""
     compact = re.sub(r"_+$", "", encoded) or encoded
+    if not re.fullmatch(r"[A-Za-z0-9+/_-]+={0,2}", compact):
+        return ""
+    if len(compact.rstrip("=")) % 4 == 1:
+        return ""
     padded = compact + ("=" * ((4 - (len(compact) % 4)) % 4))
     try:
-        plain = base64.b64decode(padded.replace("-", "+").replace("_", "/")).decode("utf-8", errors="ignore")
+        plain = base64.b64decode(padded.replace("-", "+").replace("_", "/"), validate=True).decode("utf-8", errors="replace")
     except Exception:
         return ""
-    match = re.search(r"_(\d{5,})", plain)
-    return match.group(1) if match else ""
+    match = re.search(r"_([0-9]{5,})", plain)
+    return match.group(1) if match and int(match.group(1)) > 0 else ""
 
 
 def make_imei(cookie: str) -> str:
-    pkey = pick_cookie(cookie, "pkey")
-    if not pkey:
-        raise ValueError("Cookie 缺少 pkey")
-    return hashlib.md5(pkey.encode("utf-8")).hexdigest()[:16]
+    """Read the captured device identifier instead of manufacturing one from pkey."""
+    return pick_cookie(cookie, "imei")
 
 
 def build_app_cookie(cookie: str) -> str:
@@ -161,16 +187,18 @@ def parse_maxjia(value: Any) -> Optional[dict]:
 
 
 def build_web_cookie(cookie: str, heybox_id: str) -> str:
-    """Preserve account cookies and add the upstream Web aliases when absent."""
+    """Use the current App identity and omit App device metadata from Web cookies."""
     build_app_cookie(cookie)
-    values = {}
-    for raw in cookie.split(";"):
-        if "=" in raw:
-            key, value = raw.split("=", 1)
-            if key.strip():
-                values[key.strip()] = value.strip()
-    values.setdefault("x_pkey", values["pkey"])
-    values.setdefault("x_heybox_id", heybox_id)
+    values = parse_cookie_map(cookie)
+    parsed_id = decode_pkey_to_user_id(cookie)
+    if not parsed_id:
+        raise ValueError("无法从 pkey 解析 heybox_id")
+    if str(heybox_id) != parsed_id:
+        raise ValueError("Cookie 账号 ID 与 pkey 解析结果不一致")
+    values["x_pkey"] = values["pkey"]
+    values["x_heybox_id"] = parsed_id
+    for key in APP_DEVICE_KEYS:
+        values.pop(key, None)
     return ";".join(f"{key}={value}" for key, value in values.items() if value)
 
 
@@ -183,15 +211,55 @@ def response_preview(response: requests.Response, limit: int = 500) -> str:
     return f"{text[:limit]}..." if len(text) > limit else text
 
 
+def validate_signature_payload(payload: Dict[str, Any], time_sec: Any, report: bool = False) -> Dict[str, str]:
+    """Reject incomplete or mismatched service signatures before account requests."""
+    def fail(message: str):
+        server_message = to_text(payload.get("msg")) if isinstance(payload, dict) else ""
+        raise RuntimeError(f"hkey接口{message}" + (f"：{server_message}" if server_message else ""))
+
+    if not isinstance(payload, dict) or payload.get("status") != OK_STATE:
+        fail("请求失败")
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        fail("缺少 result 对象")
+    hkey, rnd = to_text(result.get("hkey")), to_text(result.get("_rnd"))
+    version, build = to_text(result.get("version")), to_text(result.get("build"))
+    if not re.fullmatch(r"[0-9A-F]{1,8}", hkey):
+        fail("缺少有效 hkey")
+    if not re.fullmatch(r"[0-9]+:[0-9A-F]{1,8}", rnd):
+        fail("缺少有效 _rnd")
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version):
+        fail("缺少有效 version")
+    if not re.fullmatch(r"[1-9][0-9]*", build):
+        fail("缺少有效 build")
+    if result.get("time") != str(time_sec):
+        fail("返回时间与请求时间不一致")
+    if report and (
+        not isinstance(result.get("data"), str) or not result["data"]
+        or not isinstance(result.get("key"), str) or not result["key"]
+        or not isinstance(result.get("sid"), str) or not re.fullmatch(r"[0-9a-f]{64}", result["sid"])
+    ):
+        fail("缺少有效 data/key/sid")
+    return {**result, "hkey": hkey, "_rnd": rnd, "version": version, "build": build}
+
+
 class HeyboxAccount:
     def __init__(self, name: str, cookie: str):
-        self.raw_cookie = str(cookie or "").strip()
+        fields = parse_cookie_map(cookie)
+        self.raw_cookie = (cookie or "").strip()
         self.heybox_id = decode_pkey_to_user_id(self.raw_cookie)
         if not self.heybox_id:
             raise ValueError("无法从 pkey 解析 heybox_id，请确认 Cookie 完整")
         self.name = str(name or "").strip() or self.heybox_id
         self.imei = make_imei(self.raw_cookie)
-        self.device_info = APP_PROFILE["device_info"]
+        self.device_info = fields.get("device_info", "")
+        self.app_profile = {
+            **APP_PROFILE,
+            "device_info": self.device_info,
+            "os_version": fields.get("os_version", ""),
+            "dw": fields.get("dw", ""),
+            "channel": fields.get("channel") or None,
+        }
         self.app_cookie = build_app_cookie(self.raw_cookie)
         self.web_cookie = build_web_cookie(self.raw_cookie, self.heybox_id)
 
@@ -203,6 +271,7 @@ class HeyboxClient:
         self.retry_count = retry_count
         self.retry_interval = retry_interval
         self.runtime = {"version": "", "build": ""}
+        self.expected_task_keys = []
         self.session = requests.Session()
 
     def app_headers(self, extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
@@ -227,7 +296,8 @@ class HeyboxClient:
         retries: Optional[int] = None,
     ) -> Dict[str, Any]:
         method = method.upper()
-        attempts = max(1, (self.retry_count if retries is None else retries) + 1)
+        retry_count = (self.retry_count if method in ("GET", "HEAD", "OPTIONS") else 0) if retries is None else retries
+        attempts = max(1, retry_count + 1)
         last_error = None
         for attempt in range(1, attempts + 1):
             try:
@@ -239,21 +309,18 @@ class HeyboxClient:
                     json=json_body,
                     timeout=self.timeout,
                 )
-                if response.status_code >= 500 and attempt < attempts:
-                    logger.warning(f"小黑盒请求 HTTP {response.status_code}，第 {attempt}/{attempts} 次重试：{method} {url}")
-                elif not 200 <= response.status_code < 300:
+                if not 200 <= response.status_code < 300:
                     raise RuntimeError(f"HTTP {response.status_code}: {response_preview(response)}")
-                else:
-                    try:
-                        data_obj = response.json()
-                    except Exception:
-                        raise RuntimeError(f"JSON解析失败：{response_preview(response)}")
-                    if not isinstance(data_obj, dict):
-                        raise RuntimeError("响应不是 JSON 对象")
-                    return data_obj
+                try:
+                    data_obj = response.json()
+                except Exception:
+                    raise RuntimeError(f"JSON解析失败：{response_preview(response)}")
+                if not isinstance(data_obj, dict):
+                    raise RuntimeError("响应不是 JSON 对象")
+                return data_obj
             except Exception as err:
                 last_error = err
-                if attempt >= attempts:
+                if attempt >= attempts or not isinstance(err, (requests.Timeout, requests.ConnectionError)):
                     break
                 logger.warning(f"小黑盒请求异常，第 {attempt}/{attempts} 次重试：{method} {url}，错误：{err}")
 
@@ -262,59 +329,58 @@ class HeyboxClient:
 
         raise RuntimeError(str(last_error) if last_error else f"请求失败：{method} {url}")
 
-    def request_hkey(self, path: str, time_sec: Optional[int] = None) -> Dict[str, str]:
-        now = str(time_sec or int(time.time()))
-        query = build_query_string({
-            "mode": "request",
+    def signing_input(self, path: str, time_sec: Any) -> Dict[str, str]:
+        profile = self.account.app_profile
+        for key in ("device_info", "os_version", "dw"):
+            if not to_text(profile.get(key)):
+                raise ValueError(f"账号配置缺少 App 请求字段 {key}，请在 Cookie 中补充抓包值")
+        if not re.fullmatch(r"[\x21-\x7e]+", self.account.imei):
+            raise ValueError("账号配置缺少有效 App 请求字段 imei，请在 Cookie 中补充抓包值")
+        if not re.fullmatch(r"[1-9][0-9]*", str(time_sec)):
+            raise ValueError("签名时间必须为正整数秒")
+        return {
             "path": path,
-            "time": now,
+            "time": str(time_sec),
             "imei": self.account.imei,
             "heybox_id": self.account.heybox_id,
-        })
+            "os_version": profile["os_version"],
+        }
+
+    def request_hkey(self, path: str, time_sec: Optional[int] = None) -> Dict[str, str]:
+        now = int(time.time()) if time_sec is None else time_sec
+        query = build_query_string({"mode": "request", **self.signing_input(path, now)})
         payload = self.request_json("GET", f"{HKEY_API}?{query}", headers={"User-Agent": APP_UA, "Accept": "application/json"})
-        status = to_text(payload.get("status"))
-        if status and status != OK_STATE:
-            raise RuntimeError(f"hkey接口失败 status={status} msg={to_text(payload.get('msg')) or '无'}")
-        result = payload.get("result") if isinstance(payload.get("result"), dict) else payload
-        hkey = to_text(result.get("hkey"))
-        version = to_text(result.get("version"))
-        build = to_text(result.get("build"))
-        if not hkey:
-            raise RuntimeError("hkey接口未返回 hkey")
-        if not version:
-            raise RuntimeError("hkey接口未返回 version")
-        if not re.match(r"^\d+$", build):
-            raise RuntimeError("hkey接口未返回有效 build")
-        return {"hkey": hkey, "version": version, "build": build, "time": now}
+        return validate_signature_payload(payload, now)
+
+    @staticmethod
+    def validate_extra_query(path: str, extra_query: Optional[Dict[str, Any]] = None):
+        for key in extra_query or {}:
+            if key in APP_SIGNED_KEYS:
+                raise ValueError(f"{path}: 业务参数不能覆盖签名字段 {key}")
 
     def build_signed_query(self, path: str, hkey_result: Dict[str, str], extra_query: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self.validate_extra_query(path, extra_query)
         if hkey_result.get("version"):
             self.runtime["version"] = hkey_result["version"]
         if hkey_result.get("build"):
             self.runtime["build"] = hkey_result["build"]
         query = {
+            **(extra_query or {}),
             "heybox_id": self.account.heybox_id,
             "imei": self.account.imei,
             "device_info": self.account.device_info,
             "nonce": make_nonce(),
             "hkey": hkey_result.get("hkey"),
-            "os_type": APP_PROFILE["os_type"],
-            "x_os_type": APP_PROFILE["x_os_type"],
-            "x_client_type": APP_PROFILE["x_client_type"],
-            "os_version": APP_PROFILE["os_version"],
+            "_rnd": hkey_result.get("_rnd"),
+            **self.account.app_profile,
             "version": self.runtime["version"],
             "build": self.runtime["build"],
             "_time": hkey_result.get("time"),
-            "dw": APP_PROFILE["dw"],
-            "channel": APP_PROFILE["channel"],
-            "x_app": APP_PROFILE["x_app"],
-            "time_zone": APP_PROFILE["time_zone"],
         }
-        if extra_query:
-            query.update(extra_query)
         return query
 
     def get_json(self, path: str, extra_query: Optional[Dict[str, Any]] = None, base_url: str = API_BASE) -> Dict[str, Any]:
+        self.validate_extra_query(path, extra_query)
         time_sec = int(time.time())
         hkey = self.request_hkey(path, time_sec)
         query = build_query_string(self.build_signed_query(path, hkey, extra_query))
@@ -327,6 +393,11 @@ class HeyboxClient:
         extra_query: Optional[Dict[str, Any]] = None,
         base_url: str = DATA_BASE,
     ) -> Dict[str, Any]:
+        if not isinstance(text_payload, str):
+            raise ValueError("report 数据必须为 JSON 字符串")
+        self.validate_extra_query(path, extra_query)
+        if "time_" in (extra_query or {}):
+            raise ValueError("业务参数不能覆盖 report 时间 time_")
         time_sec = str(int(time.time()))
         hkey_payload = self.request_json(
             "POST",
@@ -334,30 +405,16 @@ class HeyboxClient:
             headers={"Content-Type": "application/json"},
             json_body={
                 "mode": "report",
-                "path": path,
                 "text": text_payload,
-                "time": time_sec,
-                "imei": self.account.imei,
-                "heybox_id": self.account.heybox_id,
+                **self.signing_input(path, time_sec),
             },
         )
-        result = hkey_payload.get("result") if isinstance(hkey_payload.get("result"), dict) else {}
-        if result.get("version"):
-            self.runtime["version"] = to_text(result.get("version"))
-        if result.get("build"):
-            self.runtime["build"] = to_text(result.get("build"))
-        if not all(result.get(key) for key in ("hkey", "data", "key", "sid", "time")):
-            raise RuntimeError(f"hkey report 未返回完整加密参数：{json.dumps(hkey_payload, ensure_ascii=False)[:300]}")
+        result = validate_signature_payload(hkey_payload, time_sec, report=True)
 
         query = self.build_signed_query(
             path,
-            {
-                "hkey": to_text(result.get("hkey")),
-                "version": self.runtime["version"],
-                "build": self.runtime["build"],
-                "time": to_text(result.get("time")),
-            },
-            {"time_": result.get("time"), **(extra_query or {})},
+            result,
+            {**(extra_query or {}), "time_": time_sec},
         )
         body = build_query_string({"data": result.get("data"), "key": result.get("key"), "sid": result.get("sid")})
         return self.request_json(
@@ -367,26 +424,46 @@ class HeyboxClient:
             data=body,
         )
 
-    def post_json(self, path: str, body: dict) -> Dict[str, Any]:
+    def post_json(self, path: str, body: dict, extra_query: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Submit App form writes once; an uncertain response must not duplicate a post."""
+        self.validate_extra_query(path, extra_query)
         hkey = self.request_hkey(path)
-        query = build_query_string(self.build_signed_query(path, hkey))
+        query = build_query_string(self.build_signed_query(path, hkey, extra_query))
         return self.request_json("POST", f"{API_BASE}{path}?{query}",
                                  headers=self.app_headers({"Content-Type": "application/x-www-form-urlencoded"}),
                                  data=build_query_string(body), retries=0)
 
 
 class HeyboxWebClient(HeyboxClient):
-    """Use upstream local Web signatures for game reviews and the account's own Cookie."""
+    """Use upstream local Web signatures with the account's own Cookie."""
 
-    def post_json(self, path: str, body: dict) -> Dict[str, Any]:
-        query = {**WEB_PROFILE, "heybox_id": self.account.heybox_id, **make_web_signature(path)}
+    def build_query(self, path: str, extra_query: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        source = extra_query or {}
+        for key in ("hkey", "_rnd"):
+            if key in source:
+                raise ValueError(f"{path}: 业务参数不能覆盖签名字段 {key}")
+        time_sec = source.get("_time", int(time.time()))
+        if not re.fullmatch(r"[1-9][0-9]*", str(time_sec)) or int(time_sec) > 2 ** 53 - 1:
+            raise ValueError(f"{path}: 无效的签名时间")
+        signature = make_web_signature(path, time_sec=int(time_sec), nonce=source.get("nonce"))
+        return {**WEB_PROFILE, **source, **signature, "heybox_id": self.account.heybox_id}
+
+    def web_headers(self, has_body: bool = False) -> Dict[str, str]:
         headers = {"User-Agent": WEB_UA, "Accept": "application/json, text/plain, */*",
                    "Origin": "https://web.xiaoheihe.cn", "Referer": "https://web.xiaoheihe.cn/",
-                   "X-Requested-With": "com.max.xiaoheihe", "Cookie": self.account.web_cookie,
-                   "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"}
+                   "X-Requested-With": "com.max.xiaoheihe", "Cookie": self.account.web_cookie}
+        if has_body:
+            headers["Content-Type"] = "application/x-www-form-urlencoded;charset=UTF-8"
+        return headers
+
+    def get_json(self, path: str, extra_query: Optional[Dict[str, Any]] = None, base_url: str = API_BASE) -> Dict[str, Any]:
+        query = build_query_string(self.build_query(path, extra_query))
+        return self.request_json("GET", f"{base_url}{path}?{query}", headers=self.web_headers())
+
+    def post_json(self, path: str, body: dict, extra_query: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        query = self.build_query(path, extra_query)
         return self.request_json("POST", f"{API_BASE}{path}?{build_query_string(query)}",
-                                 headers=headers, data=build_query_string(body), retries=0)
+                                 headers=self.web_headers(True), data=build_query_string(body), retries=0)
 
 
 class AccountResult(BaseModel):
@@ -409,11 +486,15 @@ class SigninResult(BaseModel):
     items: List[AccountResult] = Field(default_factory=list)
 
 
+class TaskListError(RuntimeError):
+    """Stop an account when task state can no longer be verified."""
+
+
 class HeyboxSignin(_PluginBase):
     plugin_name = "小黑盒每日任务"
     plugin_desc = "根据小黑盒 App 接口执行每日签到和支持的每日任务。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "2.1.0"
+    plugin_version = "2.2.0"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "heyboxsignin_"
@@ -579,6 +660,11 @@ class HeyboxSignin(_PluginBase):
                                 self.__col_text("review_content", "游戏评价内容", DEFAULT_REVIEW_CONTENT, 9),
                                 self.__col_text("review_score", "游戏评分（1至5）", "5", 3, "number")],
                 },
+                {
+                    "component": "VAlert",
+                    "props": {"type": "info", "variant": "tonal",
+                              "text": "Cookie 需包含 pkey、x_xhh_tokenid，以及实际设备的 imei、device_info、os_version、dw；channel 可省略。旧配置缺少设备字段时，请从当前 App 请求补充。"},
+                },
                 *[self.__account_config_card(index) for index in range(1, self.MAX_ACCOUNT_COUNT + 1)],
                 {
                     "component": "VRow",
@@ -731,49 +817,40 @@ class HeyboxSignin(_PluginBase):
         logs = ["开始每日任务"]
         snapshot = self.__fetch_snapshot(client)
         logs.append(f"账号={snapshot.get('nickname') or account.heybox_id} 黑盒ID={account.heybox_id} IMEI={account.imei}")
-
-        done = set()
         unsupported = set()
-        failures = []
-        daily_tasks = [task for task in snapshot.get("tasks", []) if self.__is_relevant_task(task)]
-
-        for task in daily_tasks:
+        failures = {}
+        tasks = [task for task in snapshot.get("tasks", []) if self.__is_relevant_task(task)]
+        for task in tasks:
             if task.get("state") == FINISH_STATE:
-                done.add(task.get("title") or self.__task_key(task))
                 award = f" ({task.get('awardText')})" if task.get("awardText") else ""
                 logs.append(f"{task.get('title')}: 已完成{award}")
 
-        for task in [item for item in daily_tasks if item.get("state") == WAITING_STATE]:
+        for task in [item for item in tasks if item.get("state") == WAITING_STATE]:
             key = self.__task_key(task)
             snapshot = self.__fetch_snapshot(client)
             latest_task = self.__find_task_by_key(snapshot, key)
             if not latest_task or latest_task.get("state") != WAITING_STATE:
                 continue
-
             if not self.__task_enabled(latest_task):
                 unsupported.add(latest_task.get("title") or key)
                 logs.append(f"{latest_task.get('title')}: 已跳过，对应任务开关未启用")
                 continue
-
             result = self.__execute_task(latest_task, client)
             if result.get("unsupported"):
                 unsupported.add(latest_task.get("title") or key)
                 logs.append(f"{latest_task.get('title')}: 未支持，{result.get('message')}")
+                if latest_task.get("taskId") in {"1", "19", "31", "33", "24"}:
+                    failures[key] = result.get("message") or "任务参数无效"
                 continue
-
             snapshot = result.get("snapshot") or self.__fetch_snapshot(client)
             after = self.__find_task_by_key(snapshot, key)
-            if result.get("cleanup_failed"):
-                failures.append(result.get("message") or "删除本次帖子失败")
-                logs.append(result.get("message") or "删除本次帖子失败")
-            if after and after.get("state") == FINISH_STATE:
-                done.add(after.get("title") or key)
+            if result.get("ok") and after and after.get("state") == FINISH_STATE:
                 award = f" 奖励: {latest_task.get('awardText')}" if latest_task.get("awardText") else ""
                 extra = f" ({result.get('message')})" if result.get("message") else ""
                 logs.append(f"{after.get('title')}: 已完成{award}{extra}")
             else:
                 msg = result.get("message") or "未完成"
-                failures.append(f"{latest_task.get('title')}: {msg}")
+                failures[key] = msg
                 logs.append(f"{latest_task.get('title')}: 未完成，{msg}")
 
         snapshot = self.__fetch_snapshot(client)
@@ -781,28 +858,60 @@ class HeyboxSignin(_PluginBase):
         logs.append(f"当前总H币: {coin}")
         if unsupported:
             logs.append(f"未支持或已跳过任务: {' | '.join(sorted(unsupported))}")
-
-        remaining = [
-            task for task in snapshot.get("tasks", [])
-            if self.__is_relevant_task(task) and self.__task_enabled(task) and task.get("state") == WAITING_STATE
-        ]
-
+        final_tasks = [task for task in snapshot.get("tasks", []) if self.__is_relevant_task(task)]
+        done = {self.__task_key(task) for task in final_tasks
+                if task.get("state") == FINISH_STATE and self.__task_key(task) not in failures}
+        remaining = [task for task in final_tasks
+                     if self.__task_enabled(task) and task.get("state") != FINISH_STATE]
         ok = not failures and not remaining
         message = f"完成 {len(done)} 个任务，当前总H币 {coin}"
         if failures:
-            message = f"{message}，失败 {len(failures)} 个"
+            message += f"，失败 {len(failures)} 个"
         if remaining:
-            message = f"{message}，仍有待完成 {len(remaining)} 个"
+            message += f"，仍有待完成 {len(remaining)} 个"
         return self.__item(ok, account.name, account.heybox_id, message, "\n".join(logs))
 
     def __fetch_snapshot(self, client: HeyboxClient) -> Dict[str, Any]:
         payload = client.get_json(PATH_LIST)
+        def invalid(reason):
+            raise TaskListError(f"获取任务列表失败：{reason}")
         if not self.__is_ok_payload(payload):
-            raise RuntimeError(f"获取任务列表失败：{to_text(payload.get('msg')) or payload.get('status')}")
-        nested = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-        if not isinstance(nested.get("task_list"), list):
-            raise RuntimeError("获取任务列表失败：返回结构不完整")
-        return self.__extract_task_list(payload)
+            invalid(to_text(payload.get("msg")) or to_text(payload.get("status")) or "响应无状态")
+        nested = payload.get("result")
+        if not isinstance(nested, dict) or not isinstance(nested.get("task_list"), list):
+            invalid("返回结构不完整")
+        for group in nested["task_list"]:
+            if (not isinstance(group, dict) or not isinstance(group.get("tasks"), list)
+                    or any(not isinstance(task, dict) for task in group["tasks"])):
+                invalid("无效的任务分组或任务")
+        user = nested.get("user")
+        level = user.get("level_info") if isinstance(user, dict) else None
+        coin = level.get("coin") if isinstance(level, dict) else None
+        if (isinstance(coin, bool) or not isinstance(coin, (int, float)) or coin < 0
+                or (isinstance(coin, float) and not (-float("inf") < coin < float("inf")))):
+            invalid("缺少有效的 H 币数据")
+        snapshot = self.__extract_task_list(payload)
+        daily = [task for task in snapshot["tasks"] if self.__is_daily_task(task)]
+        if not any(self.__is_sign_task(task) for task in daily):
+            invalid("缺少每日签到任务，无法确认任务状态")
+        if any(not any(task.get("taskId") == task_id for task in daily) for task_id in ("1", "19", "31")):
+            invalid("缺少核心每日分享任务，无法确认任务状态")
+        for task in snapshot["tasks"]:
+            if not self.__is_relevant_task(task):
+                continue
+            if not task.get("title") or task.get("state") not in (WAITING_STATE, FINISH_STATE):
+                invalid("无效的任务标题或状态")
+            if self.__is_daily_task(task) and not self.__is_sign_task(task) and not re.fullmatch(r"\d+", task.get("taskId", "")):
+                invalid("每日任务缺少 task_id")
+        current = {self.__task_key(task) for task in snapshot["tasks"]}
+        expected = getattr(client, "expected_task_keys", [])
+        if isinstance(expected, list) and expected:
+            if any(key not in current for key in expected):
+                invalid("回查时任务缺失，无法确认任务是否完成")
+        else:
+            client.expected_task_keys = [self.__task_key(task) for task in snapshot["tasks"]
+                                         if self.__is_relevant_task(task)]
+        return snapshot
 
     def __execute_task(self, task: Dict[str, Any], client: HeyboxClient) -> Dict[str, Any]:
         if not self.__task_enabled(task):
@@ -822,11 +931,15 @@ class HeyboxSignin(_PluginBase):
             if task_id == "24":
                 return self.__execute_game_review_task(task, client)
             return {"ok": False, "unsupported": True, "message": f"未支持任务 task_id={task_id}"}
+        except TaskListError:
+            raise
         except Exception as err:
             return {"ok": False, "message": f"{task.get('title')} 请求异常 {err}"}
 
     def __execute_sign(self, client: HeyboxClient) -> Dict[str, Any]:
         sign_resp = client.get_json(PATH_SIGN)
+        if not self.__is_ok_payload(sign_resp):
+            return {"ok": False, "message": to_text(sign_resp.get("msg")) or "签到接口失败"}
         first_state = to_text((sign_resp.get("result") or {}).get("state"))
         if first_state == "ignore":
             return {"ok": True, "message": "今日已签到"}
@@ -836,7 +949,7 @@ class HeyboxSignin(_PluginBase):
         result = final_payload.get("result") or {}
         status = to_text(final_payload.get("status"))
         state = to_text(result.get("state"))
-        if (status == OK_STATE and state == OK_STATE) or state == "ignore":
+        if status == OK_STATE and state in (OK_STATE, "ignore"):
             parts = []
             if result.get("sign_in_coin"):
                 parts.append(f"+{result.get('sign_in_coin')}H币")
@@ -885,7 +998,7 @@ class HeyboxSignin(_PluginBase):
             return {"ok": False, "message": f"{task.get('title')} 没有可用游戏"}
         game = games[0]
         time.sleep(1)
-        self.__send_share_events(client, "game_detail", {"app_id": game["appid"], "h_src": game["hSrc"]})
+        self.__send_share_events(client, "game_detail", {"appid": game["appid"]})
         return self.__settle_share_task(task, client, f"appid={game['appid']}")
 
     def __execute_share_game_comment(self, task: Dict[str, Any], client: HeyboxClient) -> Dict[str, Any]:
@@ -926,10 +1039,11 @@ class HeyboxSignin(_PluginBase):
             return {"ok": False, "message": f"发布失败：{to_text(response.get('msg')) or response.get('status')}"}
         nested = response.get("result") if isinstance(response.get("result"), dict) else {}
         link_id = to_text(nested.get("link_id") or response.get("link_id"))
-        if not re.fullmatch(r"\d+", link_id):
+        if not re.fullmatch(r"[1-9]\d*", link_id):
             return {"ok": False, "cleanup_failed": True,
                     "message": "发布接口未返回有效 link_id，无法自动确认或删除，请检查账号内容"}
         result = {"ok": False, "message": f"已发布 link_id={link_id}，等待超时但任务未完成"}
+        task_error = None
         try:
             for _ in range(attempts):
                 if self._stopped:
@@ -942,6 +1056,9 @@ class HeyboxSignin(_PluginBase):
                 if after and after.get("state") == FINISH_STATE:
                     result.update(ok=True, message=f"{task.get('title')} 已完成，link_id={link_id}")
                     break
+        except TaskListError as err:
+            task_error = err
+            result.update(ok=False, message=f"已发布 link_id={link_id}，回查任务失败：{err}")
         except Exception as err:
             result.update(ok=False, message=f"已发布 link_id={link_id}，回查任务失败：{err}")
         finally:
@@ -951,6 +1068,8 @@ class HeyboxSignin(_PluginBase):
                           message=f"{result['message']}；{cleanup_error}")
         else:
             result["message"] += "；本次帖子已删除"
+        if task_error is not None:
+            raise TaskListError(result["message"]) from task_error
         return result
 
     def __execute_time_limit_task(self, task: Dict[str, Any], client: HeyboxClient) -> Dict[str, Any]:
@@ -958,7 +1077,7 @@ class HeyboxSignin(_PluginBase):
         parsed = parse_maxjia(task.get("maxjia")) or {}
         params = parsed.get("params") if isinstance(parsed.get("params"), dict) else {}
         topic_id = to_text(params.get("topic_id") or parsed.get("topic_id"))
-        if not re.fullmatch(r"\d+", topic_id):
+        if not re.fullmatch(r"[1-9]\d*", topic_id):
             return {"ok": False, "unsupported": True, "message": "限时发帖缺少有效 topic_id"}
         if not self._post_title or not self._post_content:
             return {"ok": False, "message": "请填写限时帖子标题和正文"}
@@ -967,39 +1086,23 @@ class HeyboxSignin(_PluginBase):
                                    ensure_ascii=False, separators=(",", ":")),
                 "title": self._post_title, "desc": self._post_content}
         return self.__create_and_settle_post(task, client, lambda: client.post_json(PATH_BBS_POST, body),
-                                            attempts=1, wait_seconds=3)
+                                            attempts=1, wait_seconds=3 + SHARE_TASK_SETTLE_SECONDS)
 
     def __execute_game_review_task(self, task: Dict[str, Any], client: HeyboxClient) -> Dict[str, Any]:
-        """Port upstream task 24 using local Web signing and configurable review content."""
+        """Submit upstream task 24 through the App game impression endpoint."""
         parsed = parse_maxjia(task.get("maxjia")) or {}
         app_id = to_text(parsed.get("app_id"))
-        if not re.fullmatch(r"\d+", app_id):
+        if not re.fullmatch(r"[1-9]\d*", app_id):
             return {"ok": False, "unsupported": True, "message": "游戏评价缺少有效 app_id"}
         if not self._review_content:
             return {"ok": False, "message": "请填写游戏评价内容"}
-        response = client.get_json(PATH_GAME_COMMENTS, {**GAME_COMMENTS_QUERY_BASE, "appid": app_id})
-        if not self.__is_ok_payload(response):
-            return {"ok": False, "message": "获取游戏 topic_id 失败"}
-        nested = response.get("result") if isinstance(response.get("result"), dict) else {}
-        links = nested.get("links") if isinstance(nested.get("links"), list) else []
-        first = links[0] if links and isinstance(links[0], dict) else {}
-        topics = first.get("topics") if isinstance(first.get("topics"), list) else []
-        topic = topics[0] if topics and isinstance(topics[0], dict) else {}
-        topic_id = to_text(topic.get("topic_id"))
-        if not re.fullmatch(r"\d+", topic_id):
-            return {"ok": False, "message": "无法获取游戏 topic_id"}
         body = {"link_tag": "3", "appid": app_id, "score": str(self._review_score),
-                "topic_ids": topic_id, "draft": "0", "title": self._review_content,
-                "desc": self._review_content,
-                "text": json.dumps([{"checked": False, "text": self._review_content, "type": "text"}],
-                                   ensure_ascii=False, separators=(",", ":"))}
-        web_client = HeyboxWebClient(client.account, self._timeout, self._retry_count, self._retry_interval)
-        try:
-            return self.__create_and_settle_post(task, client,
-                                                lambda: web_client.post_json(PATH_BBS_POST, body),
-                                                attempts=7, wait_seconds=2)
-        finally:
-            web_client.session.close()
+                "text": json.dumps([{"type": "text", "text": self._review_content}],
+                                   ensure_ascii=False, separators=(",", ":")),
+                "game_impression_post_type": "2"}
+        return self.__create_and_settle_post(task, client,
+                                            lambda: client.post_json(PATH_BBS_POST, body, {"h_src": ""}),
+                                            attempts=7, wait_seconds=2)
 
     def __settle_share_task(self, task: Dict[str, Any], client: HeyboxClient, detail: str = "") -> Dict[str, Any]:
         time.sleep(SHARE_TASK_SETTLE_SECONDS)
@@ -1101,7 +1204,7 @@ class HeyboxSignin(_PluginBase):
         for item in links:
             link_id = to_text(item.get("link_id"))
             h_src = to_text(item.get("h_src"))
-            if not re.match(r"^\d+$", link_id) or not h_src:
+            if not re.fullmatch(r"[1-9]\d*", link_id) or not h_src:
                 continue
             key = f"{link_id}|{h_src}"
             if key in seen:
@@ -1111,23 +1214,32 @@ class HeyboxSignin(_PluginBase):
         return out
 
     def __extract_recommend_game_candidates(self, payload: Dict[str, Any]) -> List[Dict[str, str]]:
-        objects = self.__collect_objects(
-            (payload.get("result") or {}),
-            lambda node: "appid" in node and "h_src" in node,
-            40,
-        )
+        nested = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+        sections = nested.get("all_list")
+        if not isinstance(sections, list):
+            return []
+        objects = []
+        videos = []
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            if section.get("type") == "game_card_duo" and isinstance(section.get("games"), list):
+                objects.extend(section["games"])
+            elif section.get("type") == "middle_game_card_video":
+                videos.append(section.get("game"))
         seen = set()
         out = []
-        for obj in objects:
+        for obj in objects + videos:
+            if not isinstance(obj, dict):
+                continue
             appid = to_text(obj.get("appid"))
             h_src = to_text(obj.get("h_src"))
-            if not re.match(r"^\d+$", appid) or not h_src:
+            if not re.fullmatch(r"[1-9]\d*", appid) or not h_src:
                 continue
-            key = f"{appid}|{h_src}"
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append({"appid": appid, "hSrc": h_src})
+            key = (appid, h_src)
+            if key not in seen:
+                seen.add(key)
+                out.append({"appid": appid, "hSrc": h_src})
         return out
 
     @staticmethod
@@ -1136,10 +1248,10 @@ class HeyboxSignin(_PluginBase):
         if not isinstance(links, list):
             return None
         for item in links:
-            link_id = to_text(item.get("linkid") or item.get("link_id"))
+            link_id = to_text(item.get("linkid"))
             h_src = to_text(item.get("h_src"))
             user_id = to_text(item.get("userid"))
-            if re.match(r"^\d+$", link_id) and re.match(r"^\d+$", user_id) and h_src:
+            if re.fullmatch(r"[1-9]\d*", link_id) and re.fullmatch(r"[1-9]\d*", user_id) and h_src:
                 return {"linkId": link_id, "hSrc": h_src, "userId": user_id}
         return None
 
@@ -1306,7 +1418,7 @@ class HeyboxSignin(_PluginBase):
                                         "props": {
                                             "model": f"account_{index}_cookie",
                                             "label": "Cookie",
-                                            "placeholder": "pkey=xxx;x_xhh_tokenid=xxx;",
+                                            "placeholder": "pkey=xxx;x_xhh_tokenid=xxx;imei=设备IMEI;device_info=设备型号;os_version=16;dw=411;",
                                             "rows": 3,
                                             "auto-grow": True,
                                         },
