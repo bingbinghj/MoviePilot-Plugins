@@ -3,8 +3,6 @@ import os
 import threading
 import time
 import uuid
-from datetime import datetime
-from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,14 +20,13 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "2.0.2"
+    plugin_version = "1.1.0"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
     plugin_order = 15
     auth_level = 1
 
-    _last_result: Dict[str, Any] = {}
     _enabled = False
     _webhook_url = ""
     _secret = ""
@@ -45,11 +42,6 @@ class ETKScrapeWebhook(_PluginBase):
 
     def init_plugin(self, config: dict = None):
         self.stop_service()
-        try:
-            self._last_result = self.get_data("last_result") or {}
-        except Exception as exc:
-            self._last_result = {}
-            logger.warning("【ETK刮削完成通知】读取执行结果失败: %s", exc)
         config = config or {}
         self._enabled = bool(config.get("enabled"))
         self._webhook_url = str(config.get("webhook_url") or "").strip()
@@ -78,27 +70,7 @@ class ETKScrapeWebhook(_PluginBase):
         return []
 
     def get_page(self) -> Optional[List[dict]]:
-        result = self._last_result
-        if not result:
-            return [{"component": "VAlert", "props": {
-                "type": "info", "variant": "tonal", "text": "暂无执行记录"}}]
-        summary = f"执行时间：{result.get('time') or '未知'}；{result.get('message') or ''}"
-        return [{"component": "VAlert", "props": {
-            "type": "success" if result.get("success") else "error",
-            "variant": "tonal", "title": "最近一次通知结果", "text": summary}}]
-
-    def _record_result(self, delivered: bool, message: str, payload: Dict[str, Any]):
-        try:
-            if self._secret:
-                message = message.replace(self._secret, "[已隐藏]")
-            self._last_result = {
-                "success": delivered and bool(payload.get("success")),
-                "time": datetime.now(ZoneInfo(settings.TZ)).strftime("%Y-%m-%d %H:%M:%S"),
-                "message": message[:600],
-            }
-            self.save_data("last_result", self._last_result)
-        except Exception as exc:
-            logger.warning("【ETK刮削完成通知】保存执行结果失败: %s", exc)
+        pass
 
     @staticmethod
     def _plugin_log_path() -> Path:
@@ -484,7 +456,6 @@ class ETKScrapeWebhook(_PluginBase):
             "X-Emby-Toolkit-Token": self._secret,
         }
         attempts = self._retry_count + 1
-        detail = "无响应"
         for attempt in range(1, attempts + 1):
             try:
                 response = RequestUtils(
@@ -502,10 +473,6 @@ class ETKScrapeWebhook(_PluginBase):
                         scope_label,
                         episode_group,
                     )
-                    message = f"ETK已接收批次 {payload.get('batch_id') or '-'}：{payload.get('root_path') or '-'}"
-                    if not payload.get("success"):
-                        message += f"；刮削失败：{payload.get('error') or '输出校验未通过'}"
-                    self._record_result(True, message, payload)
                     return
                 detail = response.text if response is not None else "无响应"
                 logger.warning(
@@ -515,7 +482,6 @@ class ETKScrapeWebhook(_PluginBase):
                     detail,
                 )
             except Exception as exc:
-                detail = str(exc)
                 logger.warning(
                     "【ETK刮削完成通知】第 %s/%s 次通知异常: %s",
                     attempt,
@@ -524,7 +490,6 @@ class ETKScrapeWebhook(_PluginBase):
                 )
             if attempt < attempts:
                 time.sleep(min(2 ** (attempt - 1), 5))
-        self._record_result(False, f"通知失败：{detail}", payload)
 
     def stop_service(self):
         cls = type(self)
