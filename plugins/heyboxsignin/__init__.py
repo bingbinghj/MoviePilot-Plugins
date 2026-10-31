@@ -6,6 +6,7 @@ import string
 import time
 import uuid
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlencode
 
@@ -465,7 +466,7 @@ class HeyboxSignin(_PluginBase):
     plugin_name = "小黑盒每日任务"
     plugin_desc = "根据小黑盒 App 接口执行每日签到和支持的每日任务。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.2.0"
+    plugin_version = "1.2.1"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "heyboxsignin_"
@@ -599,7 +600,7 @@ class HeyboxSignin(_PluginBase):
                     "component": "VRow",
                     "content": [
                         self.__col_switch("enabled", "启用插件", 3),
-                        self.__col_switch("onlyonce", "仅运行一次", 3),
+                        self.__col_switch("onlyonce", "立即运行一次", 3),
                         self.__col_switch("notify", "发送通知", 3),
                         self.__col_switch("share_tasks", "执行分享任务", 3),
                     ],
@@ -667,6 +668,11 @@ class HeyboxSignin(_PluginBase):
         if not self._last_result:
             return [{"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "暂无执行记录"}}]
 
+        executed_at = self._last_result.get("time") or "未知"
+        summary = f"执行时间：{executed_at}"
+        if self._last_result.get("message"):
+            summary += f"；{self._last_result['message']}"
+
         rows = []
         for item in self._last_result.get("items", []):
             rows.append({
@@ -687,7 +693,7 @@ class HeyboxSignin(_PluginBase):
                     "type": "success" if self._last_result.get("success") else "error",
                     "variant": "tonal",
                     "title": self._last_result.get("title") or "最近一次执行结果",
-                    "text": self._last_result.get("message") or "",
+                    "text": summary,
                 },
             },
             {
@@ -1258,7 +1264,7 @@ class HeyboxSignin(_PluginBase):
             "success": success,
             "title": title,
             "message": message,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time": datetime.now(ZoneInfo(settings.TZ)).strftime("%Y-%m-%d %H:%M:%S"),
             "items": items,
         }
         self._last_result = result

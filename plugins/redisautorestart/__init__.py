@@ -4,6 +4,7 @@ import subprocess
 import threading
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -25,7 +26,7 @@ class RedisAutoRestart(_PluginBase):
     plugin_name = "Redis异常自动重启"
     plugin_desc = "检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "redisautorestart_"
@@ -134,7 +135,7 @@ class RedisAutoRestart(_PluginBase):
                         "component": "VRow",
                         "content": [
                             self.__col_switch("enabled", "启用插件", 4),
-                            self.__col_switch("onlyonce", "仅运行一次", 4),
+                            self.__col_switch("onlyonce", "立即运行一次", 4),
                             self.__col_switch("notify", "发送通知", 4),
                         ],
                     },
@@ -239,6 +240,11 @@ class RedisAutoRestart(_PluginBase):
         if not self._last_result:
             return [{"component": "VAlert", "props": {"type": "info", "variant": "tonal", "text": "暂无执行记录"}}]
 
+        executed_at = self._last_result.get("time") or "未知"
+        summary = f"执行时间：{executed_at}"
+        if self._last_result.get("message"):
+            summary += f"；{self._last_result['message']}"
+
         status = "success" if self._last_result.get("success") else "error"
         return [
             {
@@ -247,7 +253,7 @@ class RedisAutoRestart(_PluginBase):
                     "type": status,
                     "variant": "tonal",
                     "title": self._last_result.get("title") or "最近一次检测",
-                    "text": self._last_result.get("message") or "",
+                    "text": summary,
                 },
             },
             {
@@ -461,7 +467,7 @@ class RedisAutoRestart(_PluginBase):
             "detail": detail,
             "restart_triggered": restart_triggered,
             "failure_count": failure_count,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time": datetime.now(ZoneInfo(settings.TZ) if settings else None).strftime("%Y-%m-%d %H:%M:%S"),
         }
         self._last_result = result
         try:

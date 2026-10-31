@@ -3,12 +3,13 @@
     "name": "中国特摄联盟自动登录",
     "description": "每天自动登录中国特摄联盟，并处理站点算术验证。",
     "labels": "站点签到,自动登录,Discuz",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
+      "v1.0.4": "统一立即运行一次开关名称，插件结果摘要显示执行时间，新记录按MoviePilot配置时区保存。",
       "v1.0.3": "验证每日首登真实奖励，逐跳保留本次奖励Cookie与欢迎提示，补齐AJAX消息解析并过滤跨站Cookie。",
       "v1.0.2": "登录通知以站点实际为准：读取欢迎提示及每日奖励Cookie，移除固定奖励并修复提示末尾JavaScript残留。",
       "v1.0.1": "登录成功通知增加每日登录奖励提示。",
@@ -21,12 +22,13 @@
     "name": "Redis异常自动重启",
     "description": "检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。",
     "labels": "自动诊断,Redis,重启",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
+      "v1.0.1": "统一立即运行一次开关名称，插件结果摘要显示执行时间，新记录按MoviePilot配置时区保存。",
       "v1.0.0": "首次发布，支持 Redis PING 和自动诊断日志扫描，异常达到阈值后按配置重启 MoviePilot。"
     },
     "v3": false,
@@ -36,12 +38,13 @@
     "name": "小黑盒每日任务",
     "description": "根据小黑盒 App 接口执行每日签到和支持的每日任务。",
     "labels": "签到,小黑盒,每日任务",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "icon": "Moviepilot_A.png",
     "author": "bingbinghj",
     "level": 1,
     "v2": true,
     "history": {
+      "v1.2.1": "统一立即运行一次开关名称，插件结果摘要显示执行时间，新记录按MoviePilot配置时区保存。",
       "v1.2.0": "同步上游2a405b0：修复os_version与_rnd签名参数，改用真实设备配置，更新分享和App评价接口，严格校验任务回查并保留执行失败。",
       "v1.1.0": "同步上游15f7fb8：修复奖励标签及maxjia解析，新增可选限时发帖和游戏评价、本地Web签名及帖子清理回查。",
       "v1.0.0": "首次发布，支持多账号小黑盒每日签到和原脚本支持的分享任务。"
@@ -53,11 +56,12 @@
     "name": "ETK刮削完成通知",
     "description": "合并MoviePilot刮削完成批次，验证NFO后通知emby-toolkit。",
     "labels": "ETK,刮削,Webhook",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "icon": "webhook.png",
     "author": "bingbinghj",
     "level": 1,
     "history": {
+      "v1.1.1": "插件页面显示最近通知结果和执行时间，记录通知成功、刮削失败及发送失败状态。",
       "v1.1.0": "兼容MoviePilot V1，合并整理完成通知与手动刮削输出验收。"
     },
     "v2": false,

@@ -1,5 +1,7 @@
 # Redis 异常自动重启
 
+插件页面的结果摘要显示实际执行时间，新记录使用 MoviePilot 配置的时区；旧记录缺少时间时显示“未知”。
+
 MoviePilot V2 插件，用于检测 Redis 异常并按配置自动重启 MoviePilot。
 
 ## 检测方式

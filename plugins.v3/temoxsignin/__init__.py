@@ -2,6 +2,7 @@ import html
 import re
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 
@@ -41,7 +42,7 @@ class TemoxSignin(_PluginBase):
     plugin_name = "中国特摄联盟自动登录"
     plugin_desc = "每天自动登录中国特摄联盟，并处理站点算术验证。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "2.0.2"
+    plugin_version = "2.0.3"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "temoxsignin_"
@@ -164,7 +165,7 @@ class TemoxSignin(_PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "onlyonce",
-                                            "label": "仅运行一次",
+                                            "label": "立即运行一次",
                                         },
                                     }
                                 ],
@@ -325,6 +326,11 @@ class TemoxSignin(_PluginBase):
                 }
             ]
 
+        executed_at = self._last_result.get("time") or "未知"
+        summary = f"执行时间：{executed_at}"
+        if self._last_result.get("message"):
+            summary += f"；{self._last_result['message']}"
+
         status = "success" if self._last_result.get("success") else "error"
         return [
             {
@@ -333,7 +339,7 @@ class TemoxSignin(_PluginBase):
                     "type": status,
                     "variant": "tonal",
                     "title": self._last_result.get("title") or "最近一次执行结果",
-                    "text": self._last_result.get("message") or "",
+                    "text": summary,
                 },
             },
             {
@@ -369,7 +375,7 @@ class TemoxSignin(_PluginBase):
         if add:
             try:
                 if add(self.__class__.__name__, "run_once", self._run_once,
-                       f"{self.plugin_name}：仅运行一次", delay_seconds=3):
+                       f"{self.plugin_name}：立即运行一次", delay_seconds=3):
                     return
             except RuntimeError:
                 pass
@@ -639,7 +645,7 @@ class TemoxSignin(_PluginBase):
             "success": success,
             "title": title,
             "message": message,
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "time": datetime.now(ZoneInfo(settings.TZ)).strftime("%Y-%m-%d %H:%M:%S"),
             "site_url": self._site_url,
             "username": self._username,
         }
