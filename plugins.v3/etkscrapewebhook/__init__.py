@@ -11,7 +11,12 @@ from app.chain.transfer import TransferChain
 from app.sdk.config import settings
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
-from app.sdk.plugin import _PluginBase
+try:
+    from app.sdk.plugin import _PluginBase
+except ModuleNotFoundError as err:
+    if err.name != "app.sdk.plugin":
+        raise
+    from app.plugins import _PluginBase
 from app.schemas.types import EventType
 from app.sdk.network import RequestUtils
 
@@ -20,7 +25,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "3.0.1"
+    plugin_version = "3.0.3"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"

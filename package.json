@@ -64,6 +64,7 @@
       "v1.1.0": "兼容MoviePilot V1，合并整理完成通知与手动刮削输出验收。"
     },
     "v2": false,
-    "v3": false
+    "v3": false,
+    "system_version": ">=1.0.0,<2.0.0"
   }
 }

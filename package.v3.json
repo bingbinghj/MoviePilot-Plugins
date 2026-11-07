@@ -52,11 +52,12 @@
     "name": "ETK刮削完成通知",
     "description": "合并MoviePilot刮削完成批次，验证NFO后通知emby-toolkit。",
     "labels": "ETK,刮削,Webhook",
-    "version": "3.0.1",
+    "version": "3.0.3",
     "icon": "webhook.png",
     "author": "bingbinghj",
     "level": 1,
     "history": {
+      "v3.0.3": "禁止V3回退安装ETK的V2实现，兼容早期V3插件基类入口，修复旧版插件初始化失败。",
       "v3.0.1": "兼容MoviePilot V3 SDK及媒体来源身份，保留零次通知重试设置。"
     },
     "system_version": ">=3.0.0"
