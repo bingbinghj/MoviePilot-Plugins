@@ -66,5 +66,20 @@
     "v2": false,
     "v3": false,
     "system_version": ">=1.0.0,<2.0.0"
+  },
+  "EmbyReverseProxy": {
+    "v3": false,
+    "name": "Emby 302 反向代理",
+    "description": "Emby 302 反向代理，支持HTTP媒体源隐藏与CD2挂载文件名显示。",
+    "labels": "云盘,媒体",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/Emby_A.png",
+    "author": "DDSRem / bingbinghj",
+    "level": 1,
+    "system_version": ">=1.0.0,<2.0.0",
+    "v2": false,
+    "history": {
+      "v1.0.0": "适配MoviePilot V1，支持CD2媒体源匹配路径仅显示文件名，沿用原项目代理行为。"
+    }
   }
 }

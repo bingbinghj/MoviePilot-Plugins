@@ -61,5 +61,19 @@
       "v3.0.1": "兼容MoviePilot V3 SDK及媒体来源身份，保留零次通知重试设置。"
     },
     "system_version": ">=3.0.0"
+  },
+  "EmbyReverseProxy": {
+    "name": "Emby 302 反向代理",
+    "description": "Emby 302 反向代理，支持HTTP媒体源隐藏与CD2挂载文件名显示。",
+    "labels": "云盘,媒体",
+    "version": "3.0.1",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/refs/heads/main/icons/Emby_A.png",
+    "author": "DDSRem / bingbinghj",
+    "system_version": ">=3.0.0",
+    "level": 1,
+    "history": {
+      "v3.0.1": "媒体源隐藏前缀支持CD2等本地绝对路径，匹配后只显示文件名，沿用原有HTTP隐藏、302、播放和探测流程。",
+      "v3.0.0": "适配 MoviePilot V3 SDK 与插件依赖清单"
+    }
   }
 }

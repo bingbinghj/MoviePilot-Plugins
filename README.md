@@ -1,6 +1,6 @@
 # MoviePilot-Plugins
 
-个人维护的 MoviePilot 插件仓库，提供 MoviePilot V2、V3 插件；ETK 刮削完成通知另提供 V1 版本。
+个人维护的 MoviePilot 插件仓库，提供 MoviePilot V2、V3 插件；ETK 刮削完成通知与 Emby 302 反向代理另提供 V1 版本。
 
 维护者：[bingbinghj](https://github.com/bingbinghj)
 
@@ -12,6 +12,7 @@
 | `RedisAutoRestart` | Redis异常自动重启 | 检测 Redis 连接异常或自动诊断日志中的 Redis 故障，并自动重启 MoviePilot。 |
 | `HeyboxSignin` | 小黑盒每日任务 | 根据小黑盒 App 接口执行每日签到和支持的每日任务。 |
 | `ETKScrapeWebhook` | ETK刮削完成通知 | 合并刮削完成批次，校验 NFO 后通知 emby-toolkit。 |
+| `EmbyReverseProxy` | Emby 302 反向代理 | 支持 V1/V2/V3，CD2 挂载媒体源只显示文件名。 |
 
 特摄联盟、Redis 和小黑盒插件的结果摘要显示实际执行时间，新记录按 MoviePilot 配置时区保存；旧记录缺少时间时显示“未知”。三个插件的一次性任务开关统一使用“立即运行一次”。
 
@@ -129,6 +130,32 @@ V1 没有 V2/V3 的整理队列及元数据刮削事件，不接管逐文件刮�
 - 保持精确文件范围，避免新增单季扩大为整剧。
 - V2/V3 搭配 P115StrmHelper 时，只保留整理监控的 STRM 自动刮削入口，关闭其他重复刮削入口和提前触发 ETK 的实时监控。
 
+## Emby 302 反向代理
+
+插件 ID：`EmbyReverseProxy`，本仓库提供 V1 `1.0.0`、V2 `0.2.7`、V3 `3.0.1` 独立适配版。
+
+基于 [DDSRem 原项目](https://github.com/ddsrem-dev/moviepilot-plugins) 的对应版本实现，保留原项目的 HTTP 隐藏规则、302 重定向、播放、探测和外部播放器功能。
+
+### CD2 媒体源显示
+
+在“媒体源隐藏前缀（每行一个）”中填写：
+
+```text
+/cd2/115open
+```
+
+该前缀匹配的媒体源只显示完整文件名，例如：
+
+```text
+凡人修仙传.A Record of a Mortal's Journey to Immortality.S01E01.2020.2160p.WEB-DL.HDR.H265.AAC.2.0-ADWeb.mp4
+```
+
+只修改媒体源详情中的展示文本，实际播放和探测继续使用完整路径。匹配按目录边界进行，`/cd2/115open2` 不会匹配上述规则；多个前缀每行填写一个，最长前缀优先。
+
+HTTP(S) 规则沿用原项目：命中后优先展示并解码 `file_name` 参数，否则展示解码后的剩余路径。CD2 本地文件名按原文显示。
+
+首次使用此适配版，在插件市场选择本仓库的 Emby 302 反向代理，MoviePilot 按主程序版本安装对应实现，配置字段沿用原项目。更多配置见[插件说明](plugins.v3/embyreverseproxy/README.md)。
+
 ## 兼容结构
 
 仓库保留三套发布结构：
@@ -139,9 +166,9 @@ package.v2.json    plugins.v2/
 package.v3.json    plugins.v3/
 ```
 
-四个插件均提供独立 V2、V3 实现。V1 仅提供 ETK 插件，使用 `package.json` / `plugins/` 中的实现；V3 使用 `package.v3.json` / `plugins.v3/`。
+五个插件均提供独立 V2、V3 实现。V1 提供 ETK 与 Emby 302 插件，使用 `package.json` / `plugins/` 中的实现；V3 使用 `package.v3.json` / `plugins.v3/`。
 
-特摄联盟、Redis 和小黑盒插件在默认索引与 V2 索引中限定为 `>=2.12.0,<3`，并关闭 V3 回退。ETK 分别声明各版本的兼容范围。
+特摄联盟、Redis 和小黑盒插件在默认索引与 V2 索引中限定为 `>=2.12.0,<3`，并关闭 V3 回退。ETK 与 Emby 302 分别声明各版本的兼容范围。
 
 ## MoviePilot V3 适配
 
@@ -151,6 +178,7 @@ package.v3.json    plugins.v3/
 | Redis异常自动重启 | 2.0.1 | V3 缓存配置、手动 URL 优先、重启任务取消、真实重启状态和连接释放 |
 | 小黑盒每日任务 | 2.2.1 | App 签名、设备配置、分享和评价接口，严格校验任务回查；稳定 SDK、类型化 API、任务取消和连接释放 |
 | ETK刮削完成通知 | 3.0.3 | 原生 SDK、媒体来源身份、影视刮削接管及批次通知 |
+| Emby 302 反向代理 | 3.0.1 | 原生 SDK，CD2 挂载媒体源只显示文件名，沿用原有代理流程 |
 
 V3 使用同一个仓库地址，刷新市场后安装或更新对应插件。账号、配置键和插件 API 的 JSON 字段沿用原有名称。
 
