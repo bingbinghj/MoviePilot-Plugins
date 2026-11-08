@@ -5,6 +5,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
+from copy import copy
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,7 +23,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -214,7 +215,6 @@ class ETKScrapeWebhook(_PluginBase):
             eventmanager.disable_event_handler(cls._original_scrape_handler)
             eventmanager.add_event_listener(EventType.MetadataScrape, self._handle_scrape_event)
             cls._listener_installed = True
-        logger.info("【ETK刮削完成通知】已代理刮削事件：影视合并通知，其他类型交由宿主处理")
 
     def _handle_scrape_event(self, event: Event):
         data = getattr(event, "event_data", None) or {}
@@ -235,7 +235,7 @@ class ETKScrapeWebhook(_PluginBase):
         return getattr(value, name, default)
 
     @classmethod
-    def _event_key(cls, event_data: Dict[str, Any]) -> Optional[str]:
+    def _root_key(cls, event_data: Dict[str, Any]) -> Optional[str]:
         fileitem = event_data.get("fileitem")
         path = str(cls._field(fileitem, "path", "") or "").strip()
         storage = str(cls._field(fileitem, "storage", "") or "").strip()
@@ -244,11 +244,39 @@ class ETKScrapeWebhook(_PluginBase):
         return hashlib.sha256(f"{storage}\n{path}".encode("utf-8")).hexdigest()
 
     @classmethod
+    def _event_key(cls, event_data: Dict[str, Any]) -> Optional[str]:
+        root_key = cls._root_key(event_data)
+        if not root_key:
+            return None
+        identity = cls._media_identity(event_data.get("mediainfo") or event_data.get("meta"))
+        return hashlib.sha256(f"{root_key}\n{identity!r}".encode("utf-8")).hexdigest()
+
+    @classmethod
     def _media_identity(cls, media):
         media_type = cls._field(media, "type", "")
         media_type = str(getattr(media_type, "value", media_type)).lower()
         media_type = {"tv": "series", "电视剧": "series", "电影": "movie"}.get(media_type, media_type)
         return str(cls._field(media, "tmdb_id") or cls._field(media, "tmdbid") or ""), media_type
+
+    @classmethod
+    def _episode_group(cls, media) -> str:
+        if cls._media_identity(media)[-1] != "series":
+            return ""
+        return str(cls._field(media, "episode_group", "") or "").strip()
+
+    @classmethod
+    def _carry_episode_group(cls, previous_media, incoming_media):
+        group = cls._episode_group(previous_media)
+        identity = cls._media_identity(previous_media)
+        if (not group or cls._episode_group(incoming_media)
+                or not all(identity) or identity != cls._media_identity(incoming_media)):
+            return incoming_media
+        # 只补同一电视剧缺失的组，不回退新媒体信息，也不修改原事件对象。
+        if isinstance(incoming_media, dict):
+            return {**incoming_media, "episode_group": group}
+        merged_media = copy(incoming_media)
+        merged_media.episode_group = group
+        return merged_media
 
     def _has_pending_transfer(self, event_data):
         identity = self._media_identity(event_data.get("mediainfo") or event_data.get("meta"))
@@ -288,17 +316,12 @@ class ETKScrapeWebhook(_PluginBase):
             pending = type(self)._pending.get(key)
             if pending:
                 previous_mediainfo = pending["event_data"].get("mediainfo")
-                previous_episode_group = str(
-                    self._field(previous_mediainfo, "episode_group", "") or ""
-                )
-                incoming_episode_group = str(
-                    self._field(event_data.get("mediainfo"), "episode_group", "") or ""
-                )
                 pending["file_list"].update(incoming_files)
                 pending["full_scan"] = not bool(pending["file_list"])
                 pending["event_data"].update(event_data)
-                if previous_episode_group and not incoming_episode_group:
-                    pending["event_data"]["mediainfo"] = previous_mediainfo
+                pending["event_data"]["mediainfo"] = self._carry_episode_group(
+                    previous_mediainfo, event_data.get("mediainfo"),
+                )
             else:
                 pending = {
                     "event_data": event_data,
@@ -323,15 +346,17 @@ class ETKScrapeWebhook(_PluginBase):
             pending = type(self)._pending.get(key)
             if not pending or not self._enabled or (token is not None and token is not pending.get("token")):
                 return
-            if key in type(self)._running or self._has_pending_transfer(pending["event_data"]):
+            # 不同媒体分批，但同一根目录的宿主刮削仍串行，避免并发写入。
+            root_key = self._root_key(pending["event_data"])
+            if root_key in type(self)._running or self._has_pending_transfer(pending["event_data"]):
                 if not pending.get("waiting_for_transfer"):
-                    logger.info("【ETK刮削完成通知】同一媒体仍有整理或刮削任务，等待本批全部完成: %s",
+                    logger.info("【ETK刮削完成通知】仍有整理或刮削任务，等待本批全部完成: %s",
                                 self._field(pending["event_data"].get("fileitem"), "path"))
                     pending["waiting_for_transfer"] = True
                 self._schedule_scrape(key, pending)
                 return
             type(self)._pending.pop(key)
-            type(self)._running.add(key)
+            type(self)._running.add(root_key)
 
         event_data = dict(pending["event_data"])
         if pending["full_scan"]:
@@ -359,7 +384,7 @@ class ETKScrapeWebhook(_PluginBase):
             error = str(exc)
             logger.error("【ETK刮削完成通知】MoviePilot刮削失败: %s", exc, exc_info=True)
         with type(self)._lock:
-            type(self)._running.discard(key)
+            type(self)._running.discard(root_key)
             if not self._enabled:
                 return
             following = type(self)._pending.get(key)
@@ -367,9 +392,9 @@ class ETKScrapeWebhook(_PluginBase):
                 following = following or pending
                 following["file_list"].update(pending["file_list"])
                 following["full_scan"] = not bool(following["file_list"])
-                if (self._field(event_data.get("mediainfo"), "episode_group")
-                        and not self._field(following["event_data"].get("mediainfo"), "episode_group")):
-                    following["event_data"]["mediainfo"] = event_data["mediainfo"]
+                following["event_data"]["mediainfo"] = self._carry_episode_group(
+                    event_data.get("mediainfo"), following["event_data"].get("mediainfo"),
+                )
                 type(self)._pending[key] = following
                 self._schedule_scrape(key, following)
                 logger.info("【ETK刮削完成通知】刮削期间收到后续文件，合并后再通知ETK: %s", root_path)
@@ -454,7 +479,7 @@ class ETKScrapeWebhook(_PluginBase):
             "duration_seconds": duration,
             "media_type": str(media_type or ""),
             "tmdb_id": str(tmdb_id or ""),
-            "episode_group": str(self._field(mediainfo, "episode_group", "") or ""),
+            "episode_group": self._episode_group(mediainfo or meta),
             "root_path": str(self._field(fileitem, "path", "") or ""),
             "storage": str(self._field(fileitem, "storage", "") or ""),
             "file_list": [str(path) for path in event_data.get("file_list") or [] if path],
@@ -476,14 +501,12 @@ class ETKScrapeWebhook(_PluginBase):
                 if response and 200 <= response.status_code < 300:
                     file_count = len(payload.get("file_list") or [])
                     scope_label = f"精确文件 {file_count} 个" if file_count else "整目录"
-                    episode_group = payload.get("episode_group") or "官方季"
-                    logger.info(
-                        "【ETK刮削完成通知】ETK已接收批次 %s: %s，范围: %s，剧集组: %s",
-                        payload["batch_id"],
-                        payload["root_path"],
-                        scope_label,
-                        episode_group,
-                    )
+                    message = "【ETK刮削完成通知】ETK已接收批次 %s: %s，范围: %s"
+                    args = (payload["batch_id"], payload["root_path"], scope_label)
+                    if self._media_identity({"type": payload.get("media_type")})[-1] == "series":
+                        message += "，剧集组: %s"
+                        args += (payload.get("episode_group") or "官方季",)
+                    logger.info(message, *args)
                     return
                 detail = response.text if response is not None else "无响应"
                 logger.warning(

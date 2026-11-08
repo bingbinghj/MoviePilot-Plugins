@@ -22,7 +22,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot已完成的整理与手动刮削，校验NFO后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -176,7 +176,8 @@ class ETKScrapeWebhook(_PluginBase):
         storage = str(cls._field(fileitem, 'storage', '') or '').strip()
         if not path:
             return None
-        return hashlib.sha256(f'{storage}\n{path}'.encode('utf-8')).hexdigest()
+        identity = cls._media_identity(event_data.get('mediainfo') or event_data.get('meta'))
+        return hashlib.sha256(f'{storage}\n{path}\n{identity!r}'.encode('utf-8')).hexdigest()
 
     @classmethod
     def _media_identity(cls, media):
@@ -184,6 +185,12 @@ class ETKScrapeWebhook(_PluginBase):
         media_type = str(getattr(media_type, 'value', media_type)).lower()
         media_type = {'tv': 'series', '电视剧': 'series', '电影': 'movie'}.get(media_type, media_type)
         return (str(cls._field(media, 'tmdb_id') or cls._field(media, 'tmdbid') or ''), media_type)
+
+    @classmethod
+    def _episode_group(cls, media) -> str:
+        if cls._media_identity(media)[-1] != 'series':
+            return ''
+        return str(cls._field(media, 'episode_group', '') or '').strip()
 
     @classmethod
     def _verify_scrape_outputs(cls, event_data: Dict[str, Any]) -> Tuple[bool, str]:
@@ -223,7 +230,7 @@ class ETKScrapeWebhook(_PluginBase):
         if hasattr(media_type, 'value'):
             media_type = media_type.value
         tmdb_id = self._field(mediainfo, 'tmdb_id') or self._field(mediainfo, 'tmdbid') or self._field(meta, 'tmdb_id') or self._field(meta, 'tmdbid')
-        return {'event': 'metadata.scrape.complete', 'batch_id': batch_id, 'success': success, 'error': error or None, 'duration_seconds': duration, 'media_type': str(media_type or ''), 'tmdb_id': str(tmdb_id or ''), 'episode_group': str(self._field(mediainfo, 'episode_group', '') or ''), 'root_path': str(self._field(fileitem, 'path', '') or ''), 'storage': str(self._field(fileitem, 'storage', '') or ''), 'file_list': [str(path) for path in event_data.get('file_list') or [] if path], 'full_scan': not bool(event_data.get('file_list'))}
+        return {'event': 'metadata.scrape.complete', 'batch_id': batch_id, 'success': success, 'error': error or None, 'duration_seconds': duration, 'media_type': str(media_type or ''), 'tmdb_id': str(tmdb_id or ''), 'episode_group': self._episode_group(mediainfo or meta), 'root_path': str(self._field(fileitem, 'path', '') or ''), 'storage': str(self._field(fileitem, 'storage', '') or ''), 'file_list': [str(path) for path in event_data.get('file_list') or [] if path], 'full_scan': not bool(event_data.get('file_list'))}
 
     def _send_webhook(self, payload: Dict[str, Any]):
         headers = {'Content-Type': 'application/json', 'X-Emby-Toolkit-Token': self._secret}
@@ -234,8 +241,12 @@ class ETKScrapeWebhook(_PluginBase):
                 if response and 200 <= response.status_code < 300:
                     file_count = len(payload.get('file_list') or [])
                     scope_label = f'精确文件 {file_count} 个' if file_count else '整目录'
-                    episode_group = payload.get('episode_group') or '官方季'
-                    logger.info('【ETK刮削完成通知】ETK已接收批次 %s: %s，范围: %s，剧集组: %s', payload['batch_id'], payload['root_path'], scope_label, episode_group)
+                    message = '【ETK刮削完成通知】ETK已接收批次 %s: %s，范围: %s'
+                    args = (payload['batch_id'], payload['root_path'], scope_label)
+                    if self._media_identity({'type': payload.get('media_type')})[-1] == 'series':
+                        message += '，剧集组: %s'
+                        args += (payload.get('episode_group') or '官方季',)
+                    logger.info(message, *args)
                     return
                 detail = response.text if response is not None else '无响应'
                 logger.warning('【ETK刮削完成通知】第 %s/%s 次通知失败: %s', attempt, attempts, detail)
