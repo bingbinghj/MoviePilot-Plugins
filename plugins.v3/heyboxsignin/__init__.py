@@ -495,7 +495,7 @@ class HeyboxSignin(_PluginBase):
     plugin_name = "小黑盒每日任务"
     plugin_desc = "根据小黑盒 App 接口执行每日签到和支持的每日任务。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "2.2.1"
+    plugin_version = "2.2.2"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "heyboxsignin_"
@@ -825,6 +825,7 @@ class HeyboxSignin(_PluginBase):
         logs.append(f"账号={snapshot.get('nickname') or account.heybox_id} 黑盒ID={account.heybox_id} IMEI={account.imei}")
         unsupported = set()
         failures = {}
+        pending_sign_tasks = {}
         tasks = [task for task in snapshot.get("tasks", []) if self.__is_relevant_task(task)]
         for task in tasks:
             if task.get("state") == FINISH_STATE:
@@ -850,6 +851,12 @@ class HeyboxSignin(_PluginBase):
                 continue
             snapshot = result.get("snapshot") or self.__fetch_snapshot(client)
             after = self.__find_task_by_key(snapshot, key)
+            if self.__is_sign_task(latest_task) and (
+                    result.get("pending")
+                    or (result.get("ok") and after and after.get("state") == WAITING_STATE)):
+                pending_sign_tasks[key] = latest_task
+                logs.append(f"{latest_task.get('title')}: 等待结算")
+                continue
             if result.get("ok") and after and after.get("state") == FINISH_STATE:
                 award = f" 奖励: {latest_task.get('awardText')}" if latest_task.get("awardText") else ""
                 extra = f" ({result.get('message')})" if result.get("message") else ""
@@ -865,6 +872,13 @@ class HeyboxSignin(_PluginBase):
         if unsupported:
             logs.append(f"未支持或已跳过任务: {' | '.join(sorted(unsupported))}")
         final_tasks = [task for task in snapshot.get("tasks", []) if self.__is_relevant_task(task)]
+        for key, task in pending_sign_tasks.items():
+            final_task = self.__find_task_by_key(snapshot, key)
+            if final_task and final_task.get("state") == FINISH_STATE:
+                logs.append(f"{task.get('title')}: 已完成（结算回查确认）")
+            else:
+                failures[key] = "签到结算尚未完成"
+                logs.append(f"{task.get('title')}: 未完成，签到结算尚未完成")
         done = {self.__task_key(task) for task in final_tasks
                 if task.get("state") == FINISH_STATE and self.__task_key(task) not in failures}
         remaining = [task for task in final_tasks
@@ -955,6 +969,10 @@ class HeyboxSignin(_PluginBase):
         result = final_payload.get("result") or {}
         status = to_text(final_payload.get("status"))
         state = to_text(result.get("state"))
+        if (status == OK_STATE and state == WAITING_STATE
+                and first_state in (OK_STATE, WAITING_STATE)):
+            # 只保留已接受签到的待结算状态，最终有效任务列表负责确认完成。
+            return {"ok": False, "pending": True, "message": "签到等待结算"}
         if status == OK_STATE and state in (OK_STATE, "ignore"):
             parts = []
             if result.get("sign_in_coin"):

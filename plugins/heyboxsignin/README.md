@@ -16,6 +16,7 @@ https://raw.githubusercontent.com/yowiv08/heybox/refs/heads/main/heybox_sign.js
 - 支持多个小黑盒账号。
 - 使用账号 Cookie 和真实设备参数调用小黑盒 App 接口。
 - 执行每日签到。
+- 签到等待结算时，通过最终任务列表确认完成；持续等待或接口请求失败会报告失败。
 - 可选执行原脚本支持的每日分享任务：
   - 分享帖子任务 `task_id=1`
   - 分享游戏详情任务 `task_id=19`
