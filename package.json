@@ -57,11 +57,12 @@
     "name": "ETK刮削完成通知",
     "description": "合并MoviePilot刮削完成批次，验证NFO后通知emby-toolkit。",
     "labels": "ETK,刮削,Webhook",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "icon": "webhook.png",
     "author": "bingbinghj",
     "level": 1,
     "history": {
+      "v1.1.1": "手动刮削中的音乐请求直接转交宿主，隔离ETK日志调用栈，不参与影视NFO验证和通知。",
       "v1.1.0": "兼容MoviePilot V1，合并整理完成通知与手动刮削输出验收。"
     },
     "v2": false,

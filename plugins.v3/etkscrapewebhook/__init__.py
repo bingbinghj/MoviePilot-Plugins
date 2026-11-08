@@ -3,6 +3,8 @@ import os
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,7 +27,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot重复刮削请求，并在实际刮削完成后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "3.0.3"
+    plugin_version = "3.0.4"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -202,7 +204,7 @@ class ETKScrapeWebhook(_PluginBase):
             eventmanager.disable_event_handler(cls._original_scrape_handler)
             eventmanager.add_event_listener(EventType.MetadataScrape, self._handle_scrape_event)
             cls._listener_installed = True
-        logger.info("【ETK刮削完成通知】已接管MoviePilot元数据刮削事件")
+        logger.info("【ETK刮削完成通知】已代理刮削事件：影视合并通知，音乐交由宿主处理")
 
     def _handle_scrape_event(self, event: Event):
         data = getattr(event, "event_data", None) or {}
@@ -212,7 +214,10 @@ class ETKScrapeWebhook(_PluginBase):
         if media_type not in {"movie", "series"}:
             handler = type(self)._original_scrape_handler
             if handler is not None:
-                return handler(ScrapingChain(), event)
+                # 独立调用栈避免宿主音乐日志被识别为 ETK 日志；同步等待保留完成与异常语义。
+                # 不使用事件总线的共享线程池，避免处理器嵌套等待造成线程池耗尽。
+                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="MoviePilot-MusicScrape") as executor:
+                    return executor.submit(copy_context().run, handler, ScrapingChain(), event).result()
             return None
         return self._enqueue_scrape(event)
 

@@ -3,6 +3,8 @@ import os
 import threading
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -20,7 +22,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot已完成的整理与手动刮削，校验NFO后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.1.0"
+    plugin_version = "1.1.1"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -60,6 +62,12 @@ class ETKScrapeWebhook(_PluginBase):
             depth = threading.local()
 
             def completed(chain, storage, fileitem, meta=None, mediainfo=None, init_folder=True):
+                if self._media_identity(mediainfo or meta)[1] in {"music", "音乐"}:
+                    # 音乐仅转交宿主，不参与影视 NFO 校验或通知；独立调用栈保持宿主日志归属。
+                    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="MoviePilot-MusicScrape") as executor:
+                        return executor.submit(
+                            copy_context().run, original, chain, storage, fileitem, meta, mediainfo, init_folder,
+                        ).result()
                 nesting = getattr(depth, "value", 0)
                 depth.value = nesting + 1
                 try:
