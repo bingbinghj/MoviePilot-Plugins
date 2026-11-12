@@ -77,6 +77,8 @@ FINISH_STATE = "finish"
 POST_SHARE_VIEW_SECONDS = 5
 POST_SHARE_VIEW_MILLISECONDS = 5000
 SHARE_TASK_SETTLE_SECONDS = 2.2
+SIGN_SETTLE_ATTEMPTS = 7
+SIGN_SETTLE_SECONDS = 2
 
 FEEDS_QUERY_BASE = {
     "pull": "1",
@@ -495,7 +497,7 @@ class HeyboxSignin(_PluginBase):
     plugin_name = "小黑盒每日任务"
     plugin_desc = "根据小黑盒 App 接口执行每日签到和支持的每日任务。"
     plugin_icon = "Moviepilot_A.png"
-    plugin_version = "2.2.2"
+    plugin_version = "2.2.3"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "heyboxsignin_"
@@ -867,6 +869,13 @@ class HeyboxSignin(_PluginBase):
                 logs.append(f"{latest_task.get('title')}: 未完成，{msg}")
 
         snapshot = self.__fetch_snapshot(client)
+        for _ in range(SIGN_SETTLE_ATTEMPTS - 1):
+            if not any(
+                    (self.__find_task_by_key(snapshot, key) or {}).get("state") != FINISH_STATE
+                    for key in pending_sign_tasks):
+                break
+            time.sleep(SIGN_SETTLE_SECONDS)
+            snapshot = self.__fetch_snapshot(client)
         coin = snapshot.get("coin") or "未知"
         logs.append(f"当前总H币: {coin}")
         if unsupported:
@@ -970,8 +979,8 @@ class HeyboxSignin(_PluginBase):
         status = to_text(final_payload.get("status"))
         state = to_text(result.get("state"))
         if (status == OK_STATE and state == WAITING_STATE
-                and first_state in (OK_STATE, WAITING_STATE)):
-            # 只保留已接受签到的待结算状态，最终有效任务列表负责确认完成。
+                and first_state in ("", OK_STATE, WAITING_STATE)):
+            # 允许成功响应缺少初始 state；waiting 只记待结算，由完整任务列表确认。
             return {"ok": False, "pending": True, "message": "签到等待结算"}
         if status == OK_STATE and state in (OK_STATE, "ignore"):
             parts = []
