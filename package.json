@@ -58,11 +58,12 @@
     "name": "ETK刮削完成通知",
     "description": "合并MoviePilot刮削完成批次，验证NFO后通知emby-toolkit。",
     "labels": "ETK,刮削,Webhook",
-    "version": "1.1.2",
+    "version": "1.1.3",
     "icon": "webhook.png",
     "author": "bingbinghj",
     "level": 1,
     "history": {
+      "v1.1.3": "通知仅含验收过的现存媒体，逐项验证NFO XML与类型，保留混合批目录范围及蓝光目录NFO，避免覆盖后通知已删除文件。",
       "v1.1.2": "电影通知清空剧集组并省略组日志，按媒体身份隔离同路径批次。",
       "v1.1.1": "手动刮削中的音乐请求直接转交宿主，隔离ETK日志调用栈，不参与影视NFO验证和通知。",
       "v1.1.0": "兼容MoviePilot V1，合并整理完成通知与手动刮削输出验收。"

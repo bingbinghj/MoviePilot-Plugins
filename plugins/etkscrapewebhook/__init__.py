@@ -1,17 +1,17 @@
 import hashlib
-import os
 import threading
 import uuid
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from pathlib import Path
+from xml.etree import ElementTree
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.chain.media import MediaChain
 from app.core.config import settings
 from app.core.event import Event, eventmanager
-from app.core.metainfo import MetaInfoPath
+from app.core.metainfo import MetaInfo, MetaInfoPath
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType
@@ -22,7 +22,7 @@ class ETKScrapeWebhook(_PluginBase):
     plugin_name = "ETK刮削完成通知"
     plugin_desc = "合并MoviePilot已完成的整理与手动刮削，校验NFO后通知ETK。"
     plugin_icon = "webhook.png"
-    plugin_version = "1.1.2"
+    plugin_version = "1.1.3"
     plugin_author = "bingbinghj"
     author_url = "https://github.com/bingbinghj"
     plugin_config_prefix = "etkscrapewebhook_"
@@ -110,7 +110,8 @@ class ETKScrapeWebhook(_PluginBase):
         if not key or not self._enabled:
             return
         with type(self)._lock:
-            pending = type(self)._pending.setdefault(key, {"event_data": {}, "file_list": set(), "timer": None})
+            pending = type(self)._pending.setdefault(key, {"event_data": {}, "file_list": set(), "full_scan": False, "timer": None})
+            pending["full_scan"] = pending["full_scan"] or self._is_full_scan(event_data)
             pending["event_data"].update(event_data)
             pending["file_list"].update(str(path) for path in event_data.get("file_list") or [] if path)
             if pending["timer"]:
@@ -129,7 +130,8 @@ class ETKScrapeWebhook(_PluginBase):
                 return
             type(self)._pending.pop(key)
         data = dict(pending["event_data"])
-        data["file_list"] = sorted(pending["file_list"])
+        data["full_scan"] = pending["full_scan"]
+        data["file_list"] = [] if pending["full_scan"] else sorted(pending["file_list"])
         success, error = self._verify_scrape_outputs(data)
         self._send_webhook(self._build_payload(event_data=data, batch_id=uuid.uuid4().hex,
                                                success=success, error=error, duration=0))
@@ -192,35 +194,118 @@ class ETKScrapeWebhook(_PluginBase):
             return ''
         return str(cls._field(media, 'episode_group', '') or '').strip()
 
+    @staticmethod
+    def _is_full_scan(event_data: Dict[str, Any]) -> bool:
+        return bool(event_data.get("full_scan", not bool(event_data.get("file_list"))))
+
+    @staticmethod
+    def _is_disc_directory(path: Path) -> bool:
+        return path.is_dir() and any((path / name).is_dir() for name in ("BDMV", "CERTIFICATE"))
+
+    @classmethod
+    def _media_exists(cls, path):
+        extensions = {"." + str(ext).lower().lstrip(".") for ext in settings.RMT_MEDIAEXT} | {".strm"}
+        return path.is_file() or (cls._is_disc_directory(path) and any(
+            item.is_file() and item.suffix.lower() in extensions for item in path.rglob("*")
+        ))
+
+    @classmethod
+    def _final_media_files(cls, event_data):
+        root = Path(str(cls._field(event_data.get("fileitem"), "path", "") or ""))
+        resolved_root = root.resolve()
+        extensions = {"." + str(ext).lower().lstrip(".") for ext in settings.RMT_MEDIAEXT} | {".strm"}
+        media_type = cls._media_identity(event_data.get("mediainfo") or event_data.get("meta"))[-1]
+
+        def check_scope(path):
+            resolved = path.resolve()
+            if resolved != resolved_root and (root.is_file() or resolved_root not in resolved.parents):
+                raise ValueError(f"MoviePilot媒体文件超出刮削根范围: {path}")
+
+        def has_disc_media(path):
+            return cls._media_exists(path)
+
+        scanned_directories = set()
+
+        def scan(path):
+            check_scope(path)
+            if path.is_dir():
+                resolved = path.resolve()
+                if resolved in scanned_directories:
+                    return
+                scanned_directories.add(resolved)
+            if cls._is_disc_directory(path):
+                if has_disc_media(path):
+                    yield path
+                return
+            if path.is_file():
+                if path.suffix.lower() in extensions:
+                    yield path
+            elif path.is_dir():
+                for child in path.iterdir():
+                    if child.is_file() and child.suffix.lower() in extensions:
+                        check_scope(child)
+                        yield child
+                    elif child.is_dir() and media_type == "series" and (
+                        child.name in getattr(settings, "RENAME_FORMAT_S0_NAMES", ())
+                        or MetaInfo(child.name).begin_season is not None
+                    ):
+                        yield from scan(child)
+
+        if cls._is_full_scan(event_data):
+            return sorted(set(scan(root)))
+        files = set()
+        for value in event_data.get("file_list") or []:
+            if not value:
+                continue
+            path = Path(str(value))
+            check_scope(path)
+            disc = next((parent for parent in (path, *path.parents)
+                         if (parent == root or root in parent.parents) and cls._is_disc_directory(parent)), None)
+            if disc:
+                if has_disc_media(disc):
+                    files.add(disc)
+            elif path.is_file() and path.suffix.lower() in extensions:
+                files.add(path)
+        return sorted(files)
+
+    @classmethod
+    def _freeze_final_scope(cls, event_data):
+        full_scan = cls._is_full_scan(event_data)
+        files = cls._final_media_files(event_data)
+        event_data["full_scan"] = full_scan
+        event_data["file_list"] = [str(path) for path in files]
+        return files
+
     @classmethod
     def _verify_scrape_outputs(cls, event_data: Dict[str, Any]) -> Tuple[bool, str]:
-        fileitem = event_data.get('fileitem')
-        root_path = Path(str(cls._field(fileitem, 'path', '') or ''))
-        if not root_path.exists():
-            return (False, f'MoviePilot刮削根路径不存在: {root_path}')
-        media_extensions = {str(ext).lower() for ext in settings.RMT_MEDIAEXT}
-        file_list = [Path(str(path)) for path in event_data.get('file_list') or [] if path and Path(str(path)).suffix.lower() in media_extensions]
-        expected_nfos = [path.with_suffix('.nfo') for path in file_list]
-        if expected_nfos:
-            existing_count = sum((path.is_file() for path in expected_nfos))
-            if existing_count == len(expected_nfos):
-                return (True, '')
-            return (False, f'MoviePilot未生成完整分集NFO: {existing_count}/{len(expected_nfos)}')
-        if root_path.is_file():
-            nfo_path = root_path.with_suffix('.nfo')
-            if nfo_path.is_file():
-                return (True, '')
-            return (False, f'MoviePilot未生成NFO: {nfo_path}')
-        strm_files = sorted(root_path.rglob('*.strm'))
-        if strm_files:
-            existing_count = sum((path.with_suffix('.nfo').is_file() for path in strm_files))
-            if existing_count == len(strm_files):
-                return (True, '')
-            return (False, f'MoviePilot未生成完整STRM NFO: {existing_count}/{len(strm_files)}')
-        for _, _, filenames in os.walk(root_path):
-            if any((filename.lower().endswith('.nfo') for filename in filenames)):
-                return (True, '')
-        return (False, f'MoviePilot刮削目录内未找到NFO: {root_path}')
+        try:
+            files = cls._freeze_final_scope(event_data)
+        except (OSError, ValueError) as exc:
+            event_data["file_list"] = []
+            return False, f"MoviePilot刮削范围无法验收: {exc}"
+        if not files:
+            return False, "MoviePilot刮削范围内没有现存媒体文件"
+        media_type = cls._media_identity(event_data.get("mediainfo") or event_data.get("meta"))[-1]
+        expected_roots = {"movie"} if media_type == "movie" else {"episodedetails"} if media_type == "series" else {"movie", "episodedetails"}
+        for path in files:
+            nfo = path / f"{path.name}.nfo" if path.is_dir() else path.with_suffix(".nfo")
+            try:
+                if not nfo.is_file():
+                    nfo = next((item for item in nfo.parent.iterdir()
+                                if item.is_file() and item.stem == nfo.stem and item.suffix.lower() == ".nfo"), nfo)
+                if ElementTree.parse(nfo).getroot().tag not in expected_roots:
+                    return False, f"MoviePilot NFO类型不匹配: {nfo}"
+            except (OSError, ElementTree.ParseError) as exc:
+                return False, f"MoviePilot NFO无效: {nfo} - {exc}"
+        # 只过滤已经验收的快照，不加入验证期间新增而尚未验收的文件。
+        try:
+            event_data["file_list"] = [str(path) for path in files if cls._media_exists(path)]
+        except OSError as exc:
+            event_data["file_list"] = []
+            return False, f"MoviePilot验收期间媒体状态无法确认: {exc}"
+        if not event_data["file_list"]:
+            return False, "MoviePilot验收期间媒体文件已失效"
+        return True, ""
 
     def _build_payload(self, *, event_data: Dict[str, Any], batch_id: str, success: bool, error: str, duration: float) -> Dict[str, Any]:
         fileitem = event_data.get('fileitem')
@@ -230,7 +315,7 @@ class ETKScrapeWebhook(_PluginBase):
         if hasattr(media_type, 'value'):
             media_type = media_type.value
         tmdb_id = self._field(mediainfo, 'tmdb_id') or self._field(mediainfo, 'tmdbid') or self._field(meta, 'tmdb_id') or self._field(meta, 'tmdbid')
-        return {'event': 'metadata.scrape.complete', 'batch_id': batch_id, 'success': success, 'error': error or None, 'duration_seconds': duration, 'media_type': str(media_type or ''), 'tmdb_id': str(tmdb_id or ''), 'episode_group': self._episode_group(mediainfo or meta), 'root_path': str(self._field(fileitem, 'path', '') or ''), 'storage': str(self._field(fileitem, 'storage', '') or ''), 'file_list': [str(path) for path in event_data.get('file_list') or [] if path], 'full_scan': not bool(event_data.get('file_list'))}
+        return {'event': 'metadata.scrape.complete', 'batch_id': batch_id, 'success': success, 'error': error or None, 'duration_seconds': duration, 'media_type': str(media_type or ''), 'tmdb_id': str(tmdb_id or ''), 'episode_group': self._episode_group(mediainfo or meta), 'root_path': str(self._field(fileitem, 'path', '') or ''), 'storage': str(self._field(fileitem, 'storage', '') or ''), 'file_list': [str(path) for path in event_data.get('file_list') or [] if path], 'full_scan': self._is_full_scan(event_data)}
 
     def _send_webhook(self, payload: Dict[str, Any]):
         headers = {'Content-Type': 'application/json', 'X-Emby-Toolkit-Token': self._secret}
