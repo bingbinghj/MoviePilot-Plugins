@@ -14,6 +14,7 @@
 | `ETKScrapeWebhook` | ETK刮削完成通知 | 合并刮削完成批次，校验 NFO 后通知 emby-toolkit。 |
 | `EmbyReverseProxy` | Emby 302 反向代理 | 支持 V1/V2/V3，CD2 挂载媒体源只显示文件名。 |
 | `P115Disk` | 115网盘储存 | MP V3 版本，补齐严格查询回执，确认整理后的当前文件状态。 |
+| `P115StrmHelper` | 115网盘STRM助手 | MP V3 版本，仅通知本次生成的媒体文件，避免单集入库触发整剧处理。 |
 
 特摄联盟、Redis 和小黑盒插件的结果摘要显示实际执行时间，新记录按 MoviePilot 配置时区保存；旧记录缺少时间时显示“未知”。三个插件的一次性任务开关统一使用“立即运行一次”。
 
@@ -196,6 +197,19 @@ package.v3.json    plugins.v3/
 V3 使用同一个仓库地址，刷新市场后安装或更新对应插件。账号、配置键和插件 API 的 JSON 字段沿用原有名称。
 
 特摄联盟、Redis 和小黑盒的 Cron 使用 MoviePilot 配置时区。支持一次性任务接口的 V3 宿主在保存配置约 3 秒后执行“立即运行一次”；早期 V3 宿主直接执行。开关在执行前持久化复位，停用或重载会取消待执行任务。
+
+## 115 网盘 STRM 助手（MP V3）
+
+插件 ID：`P115StrmHelper`，版本：`3.0.3`。
+
+基于 [DDSRem-Dev/MoviePilot-Plugins](https://github.com/DDSRem-Dev/MoviePilot-Plugins) 的 `3.0.2`（源码提交 `3d8c516084c3adcd60b29e24dbcf35fc3effbee7`），保留上游功能、界面、依赖和配置。上游代码遵循 [GPL-3.0](plugins.v3/p115strmhelper/LICENSE)。
+
+- 整理、增量同步、API 生成及分享生成的刮削事件携带当前媒体的 `file_list` 和 `full_scan=false`。剧和季目录仍可初始化元数据，但不会递归刮削未包含在列表里的旧集。
+- 配合 ETK 刮削完成通知 `3.0.6`：新增第 201 集只通知第 201 集；同批新增多集只合并本批文件。沿用上游持久事件防重、失败续做和洗版处理。
+- 从本仓库更新已有插件即可沿用原配置；此修复适用于更新后产生的事件，不会改写此前已经发送给 ETK 的整剧任务。
+- 提供 `P115StrmHelper_v3.0.3` Release，安装资产为 `p115strmhelper_v3.0.3.zip`，附 SHA256 校验文件。界面直接复用上游已发布的 `dist`，对应源码位于 `frontend.v3/p115strmhelper`。
+
+回归测试：设置 `MOVIEPILOT_SOURCE` 为 MP V3 源码路径，并将 `TMPDIR` 指向测试目录；运行 `python -m unittest test_p115_single_episode` 验证 STRM 持久处理 → MP 刮削入口 → ETK 通知的单集、批量和失败重试范围。网络请求、云盘和元数据资料源使用测试替身，媒体文件及后处理数据库使用隔离目录。
 
 ## 免责声明
 
