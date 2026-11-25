@@ -119,28 +119,6 @@ class TestV3P115DiskStrictQuery(TestCase):
         self.assertIsInstance(receipt, QueryReceipt)
         self.assertIs(receipt.item, self.current)
 
-    def test_entry_definition_does_not_require_new_host_schema(self) -> None:
-        """
-        旧宿主缺少新回执模型时保留入口定义加载与普通查询
-        """
-        path = Path(__file__).resolve().parent / "plugins.v3/p115disk/__init__.py"
-        tree = ast.parse(path.read_text())
-        node = next(item for item in tree.body if isinstance(item, ast.ClassDef))
-        namespace = self.plugin_class.get_file_item.__globals__.copy()
-        namespace.pop("FileItemQueryResult", None)
-        namespace.update(
-            Any=Any, Dict=Dict, List=List, Optional=Optional, Tuple=Tuple,
-            FileItem=SimpleNamespace, Event=SimpleNamespace,
-            StorageUsage=SimpleNamespace, Response=SimpleNamespace,
-        )
-        # 不添加 future 注解，验证实际类定义的类型解析不会依赖新模型
-        module = ast.Module(body=[node], type_ignores=[])
-        exec(compile(ast.fix_missing_locations(module), str(path), "exec"), namespace)
-        plugin = object.__new__(namespace["P115Disk"])
-        plugin._disk_name, plugin._p115_api = self.plugin._disk_name, self.api
-        with patch.dict(sys.modules, {"app.schemas.file": None}):
-            self.assertIs(plugin.get_file_item(plugin._disk_name, self.path), self.cached)
-            self.assertIsNone(plugin.get_file_item_strict("other-storage", self.path))
 
     def test_confirmed_missing_is_an_empty_receipt(self) -> None:
         """
@@ -163,7 +141,7 @@ class TestV3P115DiskStrictQuery(TestCase):
         未初始化的已匹配存储不能确认文件不存在
         """
         self.plugin._p115_api = None
-        with self.assertRaises(QueryError):
+        with self.assertRaises(RuntimeError):
             self.plugin.get_file_item_strict(self.plugin._disk_name, self.path)
 
     def test_stale_positive_cache_cannot_hide_replacement(self) -> None:

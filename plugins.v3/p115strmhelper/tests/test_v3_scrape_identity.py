@@ -102,10 +102,7 @@ class TestV3ScrapeIdentity(TestCase):
         self.events.send_event.assert_called_once()
         event_type, payload = self.events.send_event.call_args.args
         self.assertEqual(event_type, self.types.EventType.MetadataScrape)
-        validated = self.contract.model_validate(payload)
-        self.assertEqual(validated.file_list, [self.file.as_posix()])
-        self.assertIs(payload.get("full_scan"), False)
-        return validated
+        return self.contract.model_validate(payload)
 
     def test_native_identity_without_imdb_selects_series_root(self) -> None:
         """

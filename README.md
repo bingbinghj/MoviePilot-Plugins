@@ -164,11 +164,9 @@ HTTP(S) 规则沿用原项目：命中后优先展示并解码 `file_name` 参�
 
 ## 115网盘储存
 
-插件 ID：`P115Disk`，本仓库提供 MoviePilot V3 `3.0.4`，基于 [DDSRem 原项目](https://github.com/ddsrem-dev/moviepilot-plugins) 的 `3.0.3`，保留原作者、配置字段和许可证。
+插件 ID：`P115Disk`，本仓库提供 MoviePilot V3 `3.0.5`，同步 [DDSRem 原项目](https://github.com/DDSRem-Dev/MoviePilot-Plugins) 的 `3.0.4`（`8cc1786`），要求 MoviePilot >=3.2.12。
 
-修复 STRM 助手处理整理完成事件时“存储 115网盘Plus 没有能够确认目标状态的查询提供方”的错误。严格查询重新确认远端文件及路径，避免旧缓存误判已经删除或洗版的文件；查询失败仍向宿主报告，普通浏览保留缓存。
-
-在 MoviePilot V3 插件市场选择本仓库的“115网盘储存”并更新到 `3.0.4`。本次只更新存储插件，ETK 通知插件与 STRM 助手的遍历方式不需要为此更换。更多来源与验证边界见[插件说明](plugins.v3/p115disk/README.md)。
+原作者已补齐严格查询回执。本版保留其客户端、目录解析、SHA1 缓存和鉴权修复，仅继续修复严格查询命中旧文件缓存、降级查询不能确认实际状态的问题，保护洗版和同步删除后的文件核验。普通浏览继续复用缓存。详见[插件说明](plugins.v3/p115disk/README.md)。
 
 ## 兼容结构
 
@@ -200,16 +198,13 @@ V3 使用同一个仓库地址，刷新市场后安装或更新对应插件。�
 
 ## 115 网盘 STRM 助手（MP V3）
 
-插件 ID：`P115StrmHelper`，版本：`3.0.3`。
+插件 ID：`P115StrmHelper`，版本：`3.1.1`，要求 MoviePilot >=3.2.12。
 
-基于 [DDSRem-Dev/MoviePilot-Plugins](https://github.com/DDSRem-Dev/MoviePilot-Plugins) 的 `3.0.2`（源码提交 `3d8c516084c3adcd60b29e24dbcf35fc3effbee7`），保留上游功能、界面、依赖和配置。上游代码遵循 [GPL-3.0](plugins.v3/p115strmhelper/LICENSE)。
+同步 [DDSRem-Dev/MoviePilot-Plugins](https://github.com/DDSRem-Dev/MoviePilot-Plugins) 的 `3.1.0`（`8cc178621d4be638e46f9b78d574ec9fbf0bd3a7`），完整保留上游界面、离线重试、扫描、同步删除和依赖更新。界面资产复用上游发布包并校验 SHA256，源码位于 `frontend.v3/p115strmhelper`，遵循 [GPL-3.0](plugins.v3/p115strmhelper/LICENSE)。
 
-- 整理、增量同步、API 生成及分享生成的刮削事件携带当前媒体的 `file_list` 和 `full_scan=false`。剧和季目录仍可初始化元数据，但不会递归刮削未包含在列表里的旧集。
-- 配合 ETK 刮削完成通知 `3.0.6`：新增第 201 集只通知第 201 集；同批新增多集只合并本批文件。沿用上游持久事件防重、失败续做和洗版处理。
-- 从本仓库更新已有插件即可沿用原配置；此修复适用于更新后产生的事件，不会改写此前已经发送给 ETK 的整剧任务。
-- 提供 `P115StrmHelper_v3.0.3` Release，安装资产为 `p115strmhelper_v3.0.3.zip`，附 SHA256 校验文件。界面直接复用上游已发布的 `dist`，对应源码位于 `frontend.v3/p115strmhelper`。
+上游刮削事件仍以剧目录为范围。本版仅保留 `file_list` 与 `full_scan=false` 的精确事件范围：入库 201 集只处理 201 集，批次合并实际转移的分集，事件重放不重复执行；用户主动发起的全剧或全季操作仍按其原范围处理。
 
-回归测试：设置 `MOVIEPILOT_SOURCE` 为 MP V3 源码路径，并将 `TMPDIR` 指向测试目录；运行 `python -m unittest test_p115_single_episode` 验证 STRM 持久处理 → MP 刮削入口 → ETK 通知的单集、批量和失败重试范围。网络请求、云盘和元数据资料源使用测试替身，媒体文件及后处理数据库使用隔离目录。
+发布资产为 `P115StrmHelper_v3.1.1` 下的 `p115strmhelper_v3.1.1.zip`，附 SHA256 校验文件。回归设置 `MOVIEPILOT_SOURCE` 为 MP V3 源码路径，`TMPDIR` 指向测试目录，运行 `python -m unittest test_p115_single_episode`。测试使用真实 MP 事件和刮削代码及临时媒体，云端和资料源使用替身。上游解决这些剩余问题后可直接使用原版。
 
 ## 免责声明
 
